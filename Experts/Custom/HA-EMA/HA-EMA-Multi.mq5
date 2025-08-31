@@ -30,7 +30,7 @@ input bool     InpUseSessionTime = false;    // Restrict trading to specific hou
 input string   InpSessionStart = "15:00";   // Session start time (HH:MM) - Indian time 3:00 PM
 input string   InpSessionEnd = "23:59";     // Session end time (HH:MM) - Indian time 11:59 PM
 input int      InpTimeZoneOffset = 0;       // India time offset in hours (from chart time)
-input bool     InpDisableWeekendTrading = false; // Disable trading on weekends (Saturday/Sunday)
+input bool     InpDisableWeekendTrading = true; // Disable trading on weekends (Saturday/Sunday)
 
 // Profit target parameters
 input bool     InpUseDailyProfitTarget = false;  // Enable daily profit target
@@ -291,16 +291,7 @@ public:
       bool trendIsStrong = IsTrendStrong();
       if(!trendIsStrong)
       {
-         Print("[", m_symbol, "] Signal detected but trend is weak - SKIPPING this trade");
-         return; // Don't trade in weak trends at all
-      }
-      
-      // Check for price action confirmation
-      bool priceActionConfirmed = CheckPriceActionConfirmation(prevColor == 0 ? POSITION_TYPE_SELL : POSITION_TYPE_BUY);
-      if(!priceActionConfirmed)
-      {
-         Print("[", m_symbol, "] Signal lacks price action confirmation - SKIPPING this trade");
-         return; // Skip trades without price action confirmation
+         Print("[", m_symbol, "] Signal detected but trend is weak - proceeding with caution");
       }
       
       // Add RSI confirmation filter
@@ -315,49 +306,17 @@ public:
          double rsiValues[1];
          if(CopyBuffer(rsiHandle, 0, 0, 1, rsiValues))
          {
-            // If we have a sell signal (blue→red) but RSI is oversold (<35), skip the trade
-            if(prevColor == 0 && currentColor == 1 && rsiValues[0] < 35)
+            // If we have a sell signal (blue→red) but RSI is oversold (<30), consider skipping
+            if(prevColor == 0 && currentColor == 1 && rsiValues[0] < 30)
             {
                Print("[", m_symbol, "] Blue → Red but RSI is oversold (", DoubleToString(rsiValues[0], 1), 
-                     ") - SKIPPING this signal");
-               IndicatorRelease(rsiHandle);
-               return; // Skip this trade completely
+                     ") - potential false signal");
             }
-            // If we have a buy signal (red→blue) but RSI is overbought (>65), skip the trade
-            else if(prevColor == 1 && currentColor == 0 && rsiValues[0] > 65)
+            // If we have a buy signal (red→blue) but RSI is overbought (>70), consider skipping
+            else if(prevColor == 1 && currentColor == 0 && rsiValues[0] > 70)
             {
                Print("[", m_symbol, "] Red → Blue but RSI is overbought (", DoubleToString(rsiValues[0], 1), 
-                     ") - SKIPPING this signal");
-               IndicatorRelease(rsiHandle);
-               return; // Skip this trade completely
-            }
-            
-            // Add RSI confirmation requirement for buy signals in trending markets
-            if(prevColor == 1 && currentColor == 0 && InpOnlyTradeWithTrend)
-            {
-               // For buy signals, we want RSI to be recovering from oversold
-               if(rsiValues[0] < 40 || rsiValues[0] > 70)
-               {
-                  // Skip unless RSI is in a good zone for buying
-                  Print("[", m_symbol, "] Red → Blue but RSI at ", DoubleToString(rsiValues[0], 1), 
-                        " is not in optimal buying zone (40-70) - SKIPPING");
-                  IndicatorRelease(rsiHandle);
-                  return;
-               }
-            }
-            
-            // Add RSI confirmation requirement for sell signals in trending markets
-            if(prevColor == 0 && currentColor == 1 && InpOnlyTradeWithTrend)
-            {
-               // For sell signals, we want RSI to be falling from overbought
-               if(rsiValues[0] < 30 || rsiValues[0] > 60)
-               {
-                  // Skip unless RSI is in a good zone for selling
-                  Print("[", m_symbol, "] Blue → Red but RSI at ", DoubleToString(rsiValues[0], 1), 
-                        " is not in optimal selling zone (30-60) - SKIPPING");
-                  IndicatorRelease(rsiHandle);
-                  return;
-               }
+                     ") - potential false signal");
             }
          }
          IndicatorRelease(rsiHandle);
@@ -657,86 +616,23 @@ public:
          datetime currentTime = TimeCurrent();
          int timeOpenMinutes = (int)(currentTime - m_positions[i].openTime) / 60;
          
-         // Enhanced trailing stop logic with progressive profit protection
-         double takeProfit = m_positions[i].expectedTP;
-         
-         // Step 1: Early protection (after 15 minutes, if 20% of TP reached)
-         if(profit >= takeProfit * 0.2 && timeOpenMinutes >= 15)
+         // Add trailing stop logic - only apply if position is in significant profit
+         if(profit > InpTakeProfit * 0.4 && timeOpenMinutes > 30) // Position in 40% of take profit and open > 30 minutes
          {
-            // Lock in at least 10% of current profit
-            double trailingStopLevel = MathMax(InpStopLoss * 0.8, profit * 0.1);
+            // Calculate trailing stop level based on profit - trail by 50% of current profit
+            double trailingStopLevel = profit * 0.5; // Lock in half of current profit
             
-            if(trailingStopLevel < m_positions[i].bestDynamicSL)
+            // Only update if this trailing stop is tighter (lower) than the previous best dynamic SL
+            // but never below a minimum threshold to avoid premature exits
+            double minimumStopLevel = MathMax(InpStopLoss * 0.5, 5.0); // Never go below half of original SL or $5
+            
+            if(trailingStopLevel > minimumStopLevel && trailingStopLevel < m_positions[i].bestDynamicSL)
             {
                double oldSL = m_positions[i].bestDynamicSL;
                m_positions[i].bestDynamicSL = trailingStopLevel;
-               Print("[", m_symbol, "] Early trailing stop for position #", m_positions[i].ticket, 
+               Print("[", m_symbol, "] Applying trailing stop for position #", m_positions[i].ticket, 
                      ", from $", DoubleToString(oldSL, 2), " to $", DoubleToString(trailingStopLevel, 2), 
-                     " (profit: $", DoubleToString(profit, 2), ", 20% of TP reached)");
-            }
-         }
-         
-         // Step 2: Medium protection (after 30 minutes, if 40% of TP reached)
-         if(profit >= takeProfit * 0.4 && timeOpenMinutes >= 30)
-         {
-            // Lock in at least 30% of current profit
-            double trailingStopLevel = MathMax(profit * 0.3, 0);
-            
-            if(trailingStopLevel < m_positions[i].bestDynamicSL)
-            {
-               double oldSL = m_positions[i].bestDynamicSL;
-               m_positions[i].bestDynamicSL = trailingStopLevel;
-               Print("[", m_symbol, "] Medium trailing stop for position #", m_positions[i].ticket, 
-                     ", from $", DoubleToString(oldSL, 2), " to $", DoubleToString(trailingStopLevel, 2), 
-                     " (profit: $", DoubleToString(profit, 2), ", 40% of TP reached)");
-            }
-         }
-         
-         // Step 3: Strong protection (after 60 minutes, if 60% of TP reached)
-         if(profit >= takeProfit * 0.6 && timeOpenMinutes >= 60)
-         {
-            // Lock in at least 50% of current profit
-            double trailingStopLevel = MathMax(profit * 0.5, 2.0);
-            
-            if(trailingStopLevel < m_positions[i].bestDynamicSL)
-            {
-               double oldSL = m_positions[i].bestDynamicSL;
-               m_positions[i].bestDynamicSL = trailingStopLevel;
-               Print("[", m_symbol, "] Strong trailing stop for position #", m_positions[i].ticket, 
-                     ", from $", DoubleToString(oldSL, 2), " to $", DoubleToString(trailingStopLevel, 2), 
-                     " (profit: $", DoubleToString(profit, 2), ", 60% of TP reached)");
-            }
-         }
-         
-         // Step 4: Full protection (after 90 minutes, if 80% of TP reached)
-         if(profit >= takeProfit * 0.8 && timeOpenMinutes >= 90)
-         {
-            // Lock in at least 75% of current profit
-            double trailingStopLevel = MathMax(profit * 0.75, 5.0);
-            
-            if(trailingStopLevel < m_positions[i].bestDynamicSL)
-            {
-               double oldSL = m_positions[i].bestDynamicSL;
-               m_positions[i].bestDynamicSL = trailingStopLevel;
-               Print("[", m_symbol, "] Full trailing stop for position #", m_positions[i].ticket, 
-                     ", from $", DoubleToString(oldSL, 2), " to $", DoubleToString(trailingStopLevel, 2), 
-                     " (profit: $", DoubleToString(profit, 2), ", 80% of TP reached)");
-            }
-         }
-         
-         // Special case: Position open over 4 hours - start moving to breakeven regardless of profit
-         if(timeOpenMinutes >= 240 && profit > 0)
-         {
-            // Move stop to breakeven +$1
-            double trailingStopLevel = -1.0; // $1 profit guaranteed
-            
-            if(trailingStopLevel < m_positions[i].bestDynamicSL)
-            {
-               double oldSL = m_positions[i].bestDynamicSL;
-               m_positions[i].bestDynamicSL = trailingStopLevel;
-               Print("[", m_symbol, "] Time-based trailing stop for position #", m_positions[i].ticket, 
-                     ", from $", DoubleToString(oldSL, 2), " to breakeven+$1", 
-                     " (position open for ", timeOpenMinutes, " minutes)");
+                     " (current profit: $", DoubleToString(profit, 2), ")");
             }
          }
          
@@ -987,42 +883,19 @@ public:
       if(adxHandle == INVALID_HANDLE)
          return true; // Default to true if we can't calculate
       
-      double adxMain[1], plusDI[1], minusDI[1];
-      if(!CopyBuffer(adxHandle, 0, 0, 1, adxMain) ||
-         !CopyBuffer(adxHandle, 1, 0, 1, plusDI) ||
-         !CopyBuffer(adxHandle, 2, 0, 1, minusDI))
+      double adxValues[1];
+      if(!CopyBuffer(adxHandle, 0, 0, 1, adxValues))
       {
          IndicatorRelease(adxHandle);
          return true;
       }
       IndicatorRelease(adxHandle);
       
-      // Check both ADX value and DI separation for trend strength
-      bool adxStrong = (adxMain[0] > 22);  // Slightly higher threshold for ADX
-      bool diSeparation = (MathAbs(plusDI[0] - minusDI[0]) > 8.0); // DI lines need decent separation
-      
-      bool strongTrend = adxStrong && diSeparation;
-      
-      // Get the true trend direction from DI lines
-      bool uptrend = (plusDI[0] > minusDI[0]);
-      bool downtrend = (minusDI[0] > plusDI[0]);
+      // ADX > 20 typically indicates a stronger trend
+      bool strongTrend = (adxValues[0] > 20);
       
       if(!strongTrend)
-      {
-         Print("[", m_symbol, "] Weak trend detected (ADX: ", DoubleToString(adxMain[0], 1), 
-               ", +DI: ", DoubleToString(plusDI[0], 1),
-               ", -DI: ", DoubleToString(minusDI[0], 1),
-               "). Trade signals may be less reliable.");
-               
-         return false; // Don't trade in weak trends
-      }
-      else
-      {
-         Print("[", m_symbol, "] Strong ", uptrend ? "UPTREND" : "DOWNTREND", 
-               " detected (ADX: ", DoubleToString(adxMain[0], 1), 
-               ", +DI: ", DoubleToString(plusDI[0], 1),
-               ", -DI: ", DoubleToString(minusDI[0], 1), ")");
-      }
+         Print("[", m_symbol, "] Weak trend detected (ADX: ", DoubleToString(adxValues[0], 1), "). Trade signals may be less reliable.");
          
       return strongTrend;
    }
