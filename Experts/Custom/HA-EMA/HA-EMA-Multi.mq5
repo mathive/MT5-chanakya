@@ -30,12 +30,13 @@ input bool     InpUseSessionTime = false;    // Restrict trading to specific hou
 input string   InpSessionStart = "15:00";   // Session start time (HH:MM) - Indian time 3:00 PM
 input string   InpSessionEnd = "23:59";     // Session end time (HH:MM) - Indian time 11:59 PM
 input int      InpTimeZoneOffset = 0;       // India time offset in hours (from chart time)
+input bool     InpDisableWeekendTrading = false; // Disable trading on weekends (Saturday/Sunday)
 
 // Profit target parameters
 input bool     InpUseDailyProfitTarget = false;  // Enable daily profit target
 input double   InpDailyProfitTarget = 60.0;     // Daily profit target (includes unrealized profit)
 input bool     InpUseMonthlyProfitTarget = true; // Enable monthly profit target
-input double   InpMonthlyProfitTarget = 200.0;   // Monthly profit target in account currency
+input double   InpMonthlyProfitTarget = 300.0;   // Monthly profit target in account currency
 input bool     InpUseMaxDrawdown = true;        // Enable maximum drawdown protection
 input double   InpMaxDrawdown = 100.0;          // Maximum drawdown from monthly peak (in account currency)
 
@@ -1606,7 +1607,7 @@ void OnTick()
    CheckAndResetMonthlyProfit();
    
    // Check if we just entered the weekend
-   if(JustEnteredWeekend())
+   if(InpDisableWeekendTrading && JustEnteredWeekend())
    {
       string message = "WEEKEND DETECTED! Closing all positions and stopping trading until Monday.";
       Print(message);
@@ -1615,8 +1616,8 @@ void OnTick()
       return; // Skip further processing
    }
    
-   // Skip trading on weekends
-   if(IsWeekend())
+   // Skip trading on weekends if weekend trading is disabled
+   if(InpDisableWeekendTrading && IsWeekend())
    {
       return;
    }
