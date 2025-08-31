@@ -238,6 +238,9 @@ public:
             totalProfit += posProfit;
             closed++;
             
+            // Update consecutive losses tracking
+            UpdateConsecutiveLossesCounter(posProfit);
+            
             // Remove from tracking array if found
             if(posIndex >= 0)
             {
@@ -284,6 +287,82 @@ public:
       if(currentColor == prevColor)
          return;  // No color change, no action
       
+      // Check trend strength using ADX
+      bool trendIsStrong = IsTrendStrong();
+      if(!trendIsStrong)
+      {
+         Print("[", m_symbol, "] Signal detected but trend is weak - SKIPPING this trade");
+         return; // Don't trade in weak trends at all
+      }
+      
+      // Check for price action confirmation
+      bool priceActionConfirmed = CheckPriceActionConfirmation(prevColor == 0 ? POSITION_TYPE_SELL : POSITION_TYPE_BUY);
+      if(!priceActionConfirmed)
+      {
+         Print("[", m_symbol, "] Signal lacks price action confirmation - SKIPPING this trade");
+         return; // Skip trades without price action confirmation
+      }
+      
+      // Add RSI confirmation filter
+      int rsiHandle = iRSI(m_symbol, PERIOD_CURRENT, 14, PRICE_CLOSE);
+      if(rsiHandle == INVALID_HANDLE)
+      {
+         Print("[", m_symbol, "] Error: Could not create RSI indicator");
+         // Continue without RSI filter
+      }
+      else
+      {
+         double rsiValues[1];
+         if(CopyBuffer(rsiHandle, 0, 0, 1, rsiValues))
+         {
+            // If we have a sell signal (blue→red) but RSI is oversold (<35), skip the trade
+            if(prevColor == 0 && currentColor == 1 && rsiValues[0] < 35)
+            {
+               Print("[", m_symbol, "] Blue → Red but RSI is oversold (", DoubleToString(rsiValues[0], 1), 
+                     ") - SKIPPING this signal");
+               IndicatorRelease(rsiHandle);
+               return; // Skip this trade completely
+            }
+            // If we have a buy signal (red→blue) but RSI is overbought (>65), skip the trade
+            else if(prevColor == 1 && currentColor == 0 && rsiValues[0] > 65)
+            {
+               Print("[", m_symbol, "] Red → Blue but RSI is overbought (", DoubleToString(rsiValues[0], 1), 
+                     ") - SKIPPING this signal");
+               IndicatorRelease(rsiHandle);
+               return; // Skip this trade completely
+            }
+            
+            // Add RSI confirmation requirement for buy signals in trending markets
+            if(prevColor == 1 && currentColor == 0 && InpOnlyTradeWithTrend)
+            {
+               // For buy signals, we want RSI to be recovering from oversold
+               if(rsiValues[0] < 40 || rsiValues[0] > 70)
+               {
+                  // Skip unless RSI is in a good zone for buying
+                  Print("[", m_symbol, "] Red → Blue but RSI at ", DoubleToString(rsiValues[0], 1), 
+                        " is not in optimal buying zone (40-70) - SKIPPING");
+                  IndicatorRelease(rsiHandle);
+                  return;
+               }
+            }
+            
+            // Add RSI confirmation requirement for sell signals in trending markets
+            if(prevColor == 0 && currentColor == 1 && InpOnlyTradeWithTrend)
+            {
+               // For sell signals, we want RSI to be falling from overbought
+               if(rsiValues[0] < 30 || rsiValues[0] > 60)
+               {
+                  // Skip unless RSI is in a good zone for selling
+                  Print("[", m_symbol, "] Blue → Red but RSI at ", DoubleToString(rsiValues[0], 1), 
+                        " is not in optimal selling zone (30-60) - SKIPPING");
+                  IndicatorRelease(rsiHandle);
+                  return;
+               }
+            }
+         }
+         IndicatorRelease(rsiHandle);
+      }
+      
       // Get current price and other symbol info
       double ask = SymbolInfoDouble(m_symbol, SYMBOL_ASK);
       double bid = SymbolInfoDouble(m_symbol, SYMBOL_BID);
@@ -304,8 +383,11 @@ public:
       // Add small delay to ensure orders are processed
       Sleep(100);
       
-      // Determine lot size based on conditions
-      double lotSize = InpLotSize;
+      // Base lot size adjusted by volatility and risk management
+      double baseLotSize = NormalizeLotSize(InpLotSize);
+      
+      // Apply dynamic lot sizing based on volatility and consecutive losses
+      double lotSize = CalculateDynamicLotSize(baseLotSize);
       
       // Blue → Red transition (Sell signal)
       if(prevColor == 0 && currentColor == 1)
@@ -320,7 +402,8 @@ public:
          // If EMA is below price, use double lot size (if enabled)
          if(!isPriceAboveEMA && InpUseDoubleLots)
          {
-            lotSize *= 2.0;
+            double doubleLotSize = NormalizeLotSize(baseLotSize * 2.0);
+            lotSize = CalculateDynamicLotSize(doubleLotSize);
             Print("[", m_symbol, "] Blue → Red & EMA below price: Using DOUBLE lot size ", lotSize);
          }
          else
@@ -403,7 +486,8 @@ public:
          // If EMA is above price, use double lot size (if enabled)
          if(isPriceAboveEMA && InpUseDoubleLots)
          {
-            lotSize *= 2.0;
+            double doubleLotSize = NormalizeLotSize(baseLotSize * 2.0);
+            lotSize = CalculateDynamicLotSize(doubleLotSize);
             Print("[", m_symbol, "] Red → Blue & EMA above price: Using DOUBLE lot size ", lotSize);
          }
          else
@@ -569,6 +653,93 @@ public:
          ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
          double profit = PositionGetDouble(POSITION_PROFIT);
          
+         // Get position time information for trailing stop
+         datetime currentTime = TimeCurrent();
+         int timeOpenMinutes = (int)(currentTime - m_positions[i].openTime) / 60;
+         
+         // Enhanced trailing stop logic with progressive profit protection
+         double takeProfit = m_positions[i].expectedTP;
+         
+         // Step 1: Early protection (after 15 minutes, if 20% of TP reached)
+         if(profit >= takeProfit * 0.2 && timeOpenMinutes >= 15)
+         {
+            // Lock in at least 10% of current profit
+            double trailingStopLevel = MathMax(InpStopLoss * 0.8, profit * 0.1);
+            
+            if(trailingStopLevel < m_positions[i].bestDynamicSL)
+            {
+               double oldSL = m_positions[i].bestDynamicSL;
+               m_positions[i].bestDynamicSL = trailingStopLevel;
+               Print("[", m_symbol, "] Early trailing stop for position #", m_positions[i].ticket, 
+                     ", from $", DoubleToString(oldSL, 2), " to $", DoubleToString(trailingStopLevel, 2), 
+                     " (profit: $", DoubleToString(profit, 2), ", 20% of TP reached)");
+            }
+         }
+         
+         // Step 2: Medium protection (after 30 minutes, if 40% of TP reached)
+         if(profit >= takeProfit * 0.4 && timeOpenMinutes >= 30)
+         {
+            // Lock in at least 30% of current profit
+            double trailingStopLevel = MathMax(profit * 0.3, 0);
+            
+            if(trailingStopLevel < m_positions[i].bestDynamicSL)
+            {
+               double oldSL = m_positions[i].bestDynamicSL;
+               m_positions[i].bestDynamicSL = trailingStopLevel;
+               Print("[", m_symbol, "] Medium trailing stop for position #", m_positions[i].ticket, 
+                     ", from $", DoubleToString(oldSL, 2), " to $", DoubleToString(trailingStopLevel, 2), 
+                     " (profit: $", DoubleToString(profit, 2), ", 40% of TP reached)");
+            }
+         }
+         
+         // Step 3: Strong protection (after 60 minutes, if 60% of TP reached)
+         if(profit >= takeProfit * 0.6 && timeOpenMinutes >= 60)
+         {
+            // Lock in at least 50% of current profit
+            double trailingStopLevel = MathMax(profit * 0.5, 2.0);
+            
+            if(trailingStopLevel < m_positions[i].bestDynamicSL)
+            {
+               double oldSL = m_positions[i].bestDynamicSL;
+               m_positions[i].bestDynamicSL = trailingStopLevel;
+               Print("[", m_symbol, "] Strong trailing stop for position #", m_positions[i].ticket, 
+                     ", from $", DoubleToString(oldSL, 2), " to $", DoubleToString(trailingStopLevel, 2), 
+                     " (profit: $", DoubleToString(profit, 2), ", 60% of TP reached)");
+            }
+         }
+         
+         // Step 4: Full protection (after 90 minutes, if 80% of TP reached)
+         if(profit >= takeProfit * 0.8 && timeOpenMinutes >= 90)
+         {
+            // Lock in at least 75% of current profit
+            double trailingStopLevel = MathMax(profit * 0.75, 5.0);
+            
+            if(trailingStopLevel < m_positions[i].bestDynamicSL)
+            {
+               double oldSL = m_positions[i].bestDynamicSL;
+               m_positions[i].bestDynamicSL = trailingStopLevel;
+               Print("[", m_symbol, "] Full trailing stop for position #", m_positions[i].ticket, 
+                     ", from $", DoubleToString(oldSL, 2), " to $", DoubleToString(trailingStopLevel, 2), 
+                     " (profit: $", DoubleToString(profit, 2), ", 80% of TP reached)");
+            }
+         }
+         
+         // Special case: Position open over 4 hours - start moving to breakeven regardless of profit
+         if(timeOpenMinutes >= 240 && profit > 0)
+         {
+            // Move stop to breakeven +$1
+            double trailingStopLevel = -1.0; // $1 profit guaranteed
+            
+            if(trailingStopLevel < m_positions[i].bestDynamicSL)
+            {
+               double oldSL = m_positions[i].bestDynamicSL;
+               m_positions[i].bestDynamicSL = trailingStopLevel;
+               Print("[", m_symbol, "] Time-based trailing stop for position #", m_positions[i].ticket, 
+                     ", from $", DoubleToString(oldSL, 2), " to breakeven+$1", 
+                     " (position open for ", timeOpenMinutes, " minutes)");
+            }
+         }
+         
          // Calculate dynamic SL threshold - tighten as profit increases
          double profitThreshold = 10.0;  // When profit exceeds $10, start improving SL
          double dynamicSLThreshold;
@@ -669,6 +840,9 @@ public:
                Print(message);
                Alert(message);
                
+               // Update consecutive losses tracking
+               UpdateConsecutiveLossesCounter(profit);
+               
                // Remove from tracking array
                for(int j = i; j < m_positionCount - 1; j++)
                {
@@ -683,6 +857,174 @@ public:
             }
          }
       }
+   }
+   
+   //+------------------------------------------------------------------+
+   //| Update the consecutive losses counter                            |
+   //+------------------------------------------------------------------+
+   void UpdateConsecutiveLossesCounter(double profit)
+   {
+      if(profit < 0)
+      {
+         g_consecutiveLosses++;
+         
+         // After several consecutive losses, reduce position size temporarily
+         if(g_consecutiveLosses >= 3)
+         {
+            Print("[", m_symbol, "] WARNING: ", g_consecutiveLosses, " consecutive losses detected! Consider reducing risk.");
+         }
+      }
+      else
+      {
+         // Reset counter on profitable trade
+         g_consecutiveLosses = 0;
+      }
+   }
+   
+   //+------------------------------------------------------------------+
+   //| Calculate dynamic lot size based on market volatility            |
+   //+------------------------------------------------------------------+
+   double CalculateDynamicLotSize(double baseLotSize)
+   {
+      double calculatedLotSize = baseLotSize;
+      
+      // Calculate ATR for volatility measurement
+      int atrHandle = iATR(m_symbol, PERIOD_CURRENT, 14);
+      if(atrHandle == INVALID_HANDLE)
+         return NormalizeLotSize(baseLotSize);
+      
+      double atrValues[1];
+      if(!CopyBuffer(atrHandle, 0, 0, 1, atrValues))
+      {
+         IndicatorRelease(atrHandle);
+         return NormalizeLotSize(baseLotSize);
+      }
+      IndicatorRelease(atrHandle);
+      
+      // Get 20-day average ATR for comparison
+      int atr20Handle = iATR(m_symbol, PERIOD_CURRENT, 20);
+      double atr20Values[20];
+      
+      if(atr20Handle != INVALID_HANDLE && CopyBuffer(atr20Handle, 0, 0, 20, atr20Values))
+      {
+         double avgAtr = 0;
+         for(int i = 0; i < 20; i++)
+            avgAtr += atr20Values[i];
+         avgAtr /= 20;
+         
+         IndicatorRelease(atr20Handle);
+         
+         // Adjust lot size based on current volatility compared to average
+         if(atrValues[0] > avgAtr * 1.5)
+         {
+            calculatedLotSize = baseLotSize * 0.75; // Reduce size in high volatility
+            Print("[", m_symbol, "] High volatility detected. Reducing lot size from ", 
+                  DoubleToString(baseLotSize, 2), " to ", DoubleToString(calculatedLotSize, 2));
+         }
+         else if(atrValues[0] < avgAtr * 0.75)
+         {
+            calculatedLotSize = baseLotSize * 1.25; // Increase size in low volatility
+            Print("[", m_symbol, "] Low volatility detected. Increasing lot size from ", 
+                  DoubleToString(baseLotSize, 2), " to ", DoubleToString(calculatedLotSize, 2));
+         }
+      }
+      
+      // If consecutive losses > 2, reduce position size
+      if(g_consecutiveLosses > 2)
+      {
+         calculatedLotSize = baseLotSize * (1.0 - (0.1 * MathMin(g_consecutiveLosses - 2, 5)));
+         Print("[", m_symbol, "] Reducing lot size due to ", g_consecutiveLosses, " consecutive losses: ", 
+               DoubleToString(baseLotSize, 2), " to ", DoubleToString(calculatedLotSize, 2));
+      }
+      
+      // Normalize the lot size to the allowed increments
+      return NormalizeLotSize(calculatedLotSize);
+   }
+   
+   //+------------------------------------------------------------------+
+   //| Normalize lot size to valid increment (0.01 for BTCUSD)          |
+   //+------------------------------------------------------------------+
+   double NormalizeLotSize(double lotSize)
+   {
+      // Get the minimum lot size and step for the symbol
+      double minLot = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_MIN);
+      double maxLot = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_MAX);
+      double stepLot = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_STEP);
+      
+      // If we can't get the lot information, default to 0.01 step
+      if(stepLot <= 0)
+         stepLot = 0.01;
+         
+      // Round to the nearest allowed lot size increment
+      double normalizedLot = MathRound(lotSize / stepLot) * stepLot;
+      
+      // Ensure the lot size is not below the minimum or above the maximum
+      normalizedLot = MathMax(minLot, MathMin(maxLot, normalizedLot));
+      
+      // Ensure minimum of 0.01 for safety
+      normalizedLot = MathMax(0.01, normalizedLot);
+      
+      // Debug log if there was a significant adjustment
+      if(MathAbs(normalizedLot - lotSize) > 0.001)
+      {
+         Print("[", m_symbol, "] Lot size normalized from ", DoubleToString(lotSize, 3), 
+               " to ", DoubleToString(normalizedLot, 2), 
+               " (min:", DoubleToString(minLot, 2), 
+               ", max:", DoubleToString(maxLot, 2), 
+               ", step:", DoubleToString(stepLot, 2), ")");
+      }
+      
+      return normalizedLot;
+   }
+   
+   //+------------------------------------------------------------------+
+   //| Check if current trend is strong enough for reliable signals     |
+   //+------------------------------------------------------------------+
+   bool IsTrendStrong()
+   {
+      // Use ADX to measure trend strength
+      int adxHandle = iADX(m_symbol, PERIOD_CURRENT, 14);
+      if(adxHandle == INVALID_HANDLE)
+         return true; // Default to true if we can't calculate
+      
+      double adxMain[1], plusDI[1], minusDI[1];
+      if(!CopyBuffer(adxHandle, 0, 0, 1, adxMain) ||
+         !CopyBuffer(adxHandle, 1, 0, 1, plusDI) ||
+         !CopyBuffer(adxHandle, 2, 0, 1, minusDI))
+      {
+         IndicatorRelease(adxHandle);
+         return true;
+      }
+      IndicatorRelease(adxHandle);
+      
+      // Check both ADX value and DI separation for trend strength
+      bool adxStrong = (adxMain[0] > 22);  // Slightly higher threshold for ADX
+      bool diSeparation = (MathAbs(plusDI[0] - minusDI[0]) > 8.0); // DI lines need decent separation
+      
+      bool strongTrend = adxStrong && diSeparation;
+      
+      // Get the true trend direction from DI lines
+      bool uptrend = (plusDI[0] > minusDI[0]);
+      bool downtrend = (minusDI[0] > plusDI[0]);
+      
+      if(!strongTrend)
+      {
+         Print("[", m_symbol, "] Weak trend detected (ADX: ", DoubleToString(adxMain[0], 1), 
+               ", +DI: ", DoubleToString(plusDI[0], 1),
+               ", -DI: ", DoubleToString(minusDI[0], 1),
+               "). Trade signals may be less reliable.");
+               
+         return false; // Don't trade in weak trends
+      }
+      else
+      {
+         Print("[", m_symbol, "] Strong ", uptrend ? "UPTREND" : "DOWNTREND", 
+               " detected (ADX: ", DoubleToString(adxMain[0], 1), 
+               ", +DI: ", DoubleToString(plusDI[0], 1),
+               ", -DI: ", DoubleToString(minusDI[0], 1), ")");
+      }
+         
+      return strongTrend;
    }
    
    // Process tick for this symbol
@@ -721,6 +1063,7 @@ double         g_monthlyPeakBalance = 0;    // Peak balance reached during the m
 bool           g_dailyTargetReached = false; // Whether we've reached daily target
 bool           g_monthlyTargetReached = false; // Whether we've reached monthly target
 bool           g_drawdownReached = false;    // Whether maximum drawdown has been reached
+int            g_consecutiveLosses = 0;      // Track consecutive losing trades
 
 // Symbol traders array
 CArrayString g_symbolList;
@@ -1490,6 +1833,15 @@ void OnDeinit(const int reason)
       RemoveInfoPanel();
       Print("Information panel removed from chart.");
    }
+
+   // Report trading statistics
+   Print("Final trading statistics:");
+   Print("  Consecutive losses at end: ", g_consecutiveLosses);
+   Print("  Monthly profit: $", DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE) - g_startMonthBalance, 2));
+   Print("  Monthly peak balance: $", DoubleToString(g_monthlyPeakBalance, 2));
+   double currentDrawdown = g_monthlyPeakBalance - (AccountInfoDouble(ACCOUNT_BALANCE) + CalculateTotalUnrealizedProfit());
+   Print("  Current drawdown: $", DoubleToString(currentDrawdown, 2), " (", 
+         DoubleToString((currentDrawdown/g_monthlyPeakBalance)*100.0, 1), "%)");
 
    // Clean up symbol traders
    for(int i = 0; i < ArraySize(g_symbolTraders); i++)
