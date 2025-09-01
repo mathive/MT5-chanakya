@@ -16,7 +16,7 @@ int g_baseMagicNumber = 123456; // Default value, will be updated from the main 
 #define PANEL_Y_MARGIN 20  // Y distance from top of chart
 #define PANEL_WIDTH 250    // Panel width in pixels
 #define LINE_HEIGHT 20     // Height per text line
-#define PANEL_BG_COLOR clrDimGray   // Dark gray background
+#define PANEL_BG_COLOR clrBlack   // Dark gray background
 #define PANEL_BORDER_COLOR clrGray  // Gray border
 #define TEXT_COLOR clrWhite
 #define PROFIT_COLOR clrLime   // Green for profits

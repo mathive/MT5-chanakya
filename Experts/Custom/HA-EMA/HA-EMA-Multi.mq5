@@ -2,6 +2,9 @@
 //|                                                      HA-EMA.mq5 |
 //|                                  Copyright 2025, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
+//|                                                                  |
+//| IMPORTANT: This EA is designed to work ONLY on H1 timeframe     |
+//| All calculations and indicators are locked to 1-hour period     |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
@@ -103,7 +106,7 @@ public:
    bool Initialize()
    {
       // Initialize Heiken Ashi indicator
-      m_heikenAshiHandle = iCustom(m_symbol, PERIOD_CURRENT, "Examples\\Heiken_Ashi");
+      m_heikenAshiHandle = iCustom(m_symbol, PERIOD_H1, "Examples\\Heiken_Ashi");
       if(m_heikenAshiHandle == INVALID_HANDLE)
       {
          Print("Failed to create Heiken Ashi indicator for symbol ", m_symbol);
@@ -111,7 +114,7 @@ public:
       }
       
       // Initialize EMA indicator
-      m_emaHandle = iMA(m_symbol, PERIOD_CURRENT, InpEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+      m_emaHandle = iMA(m_symbol, PERIOD_H1, InpEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
       if(m_emaHandle == INVALID_HANDLE)
       {
          Print("Failed to create EMA indicator for symbol ", m_symbol);
@@ -173,7 +176,7 @@ public:
       double close[1];
       
       if(!CopyBuffer(m_emaHandle, 0, 0, 1, ema) || 
-         !CopyClose(m_symbol, PERIOD_CURRENT, 0, 1, close))
+         !CopyClose(m_symbol, PERIOD_H1, 0, 1, close))
       {
          Print("Failed to copy EMA or price data for ", m_symbol);
          return false;
@@ -265,7 +268,7 @@ public:
          Print(message);
          if(MathAbs(totalProfit) > 5.0) // Only alert if profit/loss is significant
          {
-            Alert(message);
+            // Alert(message);
          }
       }
    }
@@ -295,7 +298,7 @@ public:
       }
       
       // Add RSI confirmation filter
-      int rsiHandle = iRSI(m_symbol, PERIOD_CURRENT, 14, PRICE_CLOSE);
+      int rsiHandle = iRSI(m_symbol, PERIOD_H1, 14, PRICE_CLOSE);
       if(rsiHandle == INVALID_HANDLE)
       {
          Print("[", m_symbol, "] Error: Could not create RSI indicator");
@@ -410,7 +413,7 @@ public:
                            ", TP: $" + DoubleToString(InpTakeProfit, 2);
             
             Print(message);
-            Alert(message);
+            // Alert(message);
             
             // Track this position for SL/TP monitoring
             if(m_positionCount < ArraySize(m_positions))
@@ -494,7 +497,7 @@ public:
                            ", TP: $" + DoubleToString(InpTakeProfit, 2);
                            
             Print(message);
-            Alert(message);
+            // Alert(message);
             
             // Track this position for SL/TP monitoring
             if(m_positionCount < ArraySize(m_positions))
@@ -734,7 +737,7 @@ public:
                               ", Profit: $" + DoubleToString(profit, 2);
                
                Print(message);
-               Alert(message);
+               // Alert(message);
                
                // Update consecutive losses tracking
                UpdateConsecutiveLossesCounter(profit);
@@ -785,7 +788,7 @@ public:
       double calculatedLotSize = baseLotSize;
       
       // Calculate ATR for volatility measurement
-      int atrHandle = iATR(m_symbol, PERIOD_CURRENT, 14);
+      int atrHandle = iATR(m_symbol, PERIOD_H1, 14);
       if(atrHandle == INVALID_HANDLE)
          return NormalizeLotSize(baseLotSize);
       
@@ -798,7 +801,7 @@ public:
       IndicatorRelease(atrHandle);
       
       // Get 20-day average ATR for comparison
-      int atr20Handle = iATR(m_symbol, PERIOD_CURRENT, 20);
+      int atr20Handle = iATR(m_symbol, PERIOD_H1, 20);
       double atr20Values[20];
       
       if(atr20Handle != INVALID_HANDLE && CopyBuffer(atr20Handle, 0, 0, 20, atr20Values))
@@ -879,7 +882,7 @@ public:
    bool IsTrendStrong()
    {
       // Use ADX to measure trend strength
-      int adxHandle = iADX(m_symbol, PERIOD_CURRENT, 14);
+      int adxHandle = iADX(m_symbol, PERIOD_H1, 14);
       if(adxHandle == INVALID_HANDLE)
          return true; // Default to true if we can't calculate
       
@@ -911,7 +914,7 @@ public:
       
       // Get the last bar time for this symbol
       static datetime lastBarTime = 0;
-      datetime thisBarTime = iTime(m_symbol, PERIOD_CURRENT, 0);
+      datetime thisBarTime = iTime(m_symbol, PERIOD_H1, 0);
       
       // Only check for signals on a new bar
       if(thisBarTime != lastBarTime)
@@ -1134,7 +1137,7 @@ void CheckAndResetDailyProfit()
          // Only alert if we had significant profit/loss
          if(MathAbs(prevDayProfit) > 10.0)
          {
-            Alert(message);
+            // Alert(message);
          }
       }
       
@@ -1145,7 +1148,7 @@ void CheckAndResetDailyProfit()
       string message = "NEW DAY DETECTED. Resetting daily profit tracking. Starting balance: $" + DoubleToString(g_startDayBalance, 2) + 
                     " (Daily target: $" + DoubleToString(InpDailyProfitTarget, 2) + " including unrealized profits)";
       Print(message);
-      Alert(message);
+      // Alert(message);
    }
 }
 
@@ -1190,7 +1193,7 @@ void CheckAndResetMonthlyProfit()
          
          Print(message);
          // Always alert for monthly summary
-         Alert(message);
+         // Alert(message);
       }
       
       g_startMonthBalance = AccountInfoDouble(ACCOUNT_BALANCE);
@@ -1208,7 +1211,7 @@ void CheckAndResetMonthlyProfit()
                       DoubleToString(g_startMonthBalance, 2) + 
                       " (Monthly target: $" + DoubleToString(InpMonthlyProfitTarget, 2) + ")";
       Print(message);
-      Alert(message);
+      // Alert(message);
    }
 }
 
@@ -1273,7 +1276,7 @@ bool CheckDailyProfitTarget()
          // Only alert at 50% and 75% to avoid too many alerts
          if(currentPercentage == 50 || currentPercentage == 75)
          {
-            Alert(message);
+            // Alert(message);
          }
          lastReportedPercentage = currentPercentage;
       }
@@ -1289,7 +1292,7 @@ bool CheckDailyProfitTarget()
                      ". Closing all positions and stopping trading for today.";
       
       Print(message);
-      Alert(message);
+      // Alert(message);
       
       // Close all open positions for all symbols
       for(int i = 0; i < ArraySize(g_symbolTraders); i++)
@@ -1362,7 +1365,7 @@ bool CheckMonthlyProfitTarget()
          // Alert at 50%, 75% and 90% to make trader aware of approaching target
          if(currentPercentage == 50 || currentPercentage == 75 || currentPercentage == 90)
          {
-            Alert(message);
+            // Alert(message);
          }
          lastReportedPercentage = currentPercentage;
       }
@@ -1378,7 +1381,7 @@ bool CheckMonthlyProfitTarget()
                      ". Closing all positions and stopping trading for the rest of the month.";
       
       Print(message);
-      Alert(message);
+      // Alert(message);
       
       // Close all open positions for all symbols
       for(int i = 0; i < ArraySize(g_symbolTraders); i++)
@@ -1467,7 +1470,7 @@ bool CheckMaxDrawdown()
          ((drawdown >= InpMaxDrawdown * 0.75) && (lastReportedDrawdown < InpMaxDrawdown * 0.75)) ||
          ((drawdown >= InpMaxDrawdown * 0.9) && (lastReportedDrawdown < InpMaxDrawdown * 0.9)))
       {
-         Alert(message);
+         // Alert(message);
       }
       
       lastReportedDrawdown = drawdown;
@@ -1483,7 +1486,7 @@ bool CheckMaxDrawdown()
                      ". Closing all positions and stopping trading for the rest of the month.";
       
       Print(message);
-      Alert(message);
+      // Alert(message);
       
       // Close all open positions for all symbols
       for(int i = 0; i < ArraySize(g_symbolTraders); i++)
@@ -1577,6 +1580,16 @@ bool ParseSymbolList()
 //+------------------------------------------------------------------+
 int OnInit()
 {
+   // Ensure the EA only runs on H1 (1-hour) timeframe
+   if(Period() != PERIOD_H1)
+   {
+      Print("ERROR: This EA is designed to work only on H1 (1-hour) timeframe. Current timeframe: ", EnumToString((ENUM_TIMEFRAMES)Period()));
+      MessageBox("This Expert Advisor is optimized for H1 (1-hour) timeframe only.\nPlease switch to H1 chart and restart the EA.", "Timeframe Warning", MB_OK | MB_ICONWARNING);
+      return INIT_FAILED;
+   }
+   
+   Print("Timeframe validation passed: Running on H1 (1-hour) timeframe");
+   
    // Set the magic number for the display panel
    SetMagicNumber(InpMagicNumber);
    
@@ -1763,7 +1776,7 @@ bool AddHeikenAshiToChart()
    string indicatorName = "Examples\\Heiken_Ashi";
    
    // Create the indicator handle
-   int handle = iCustom(_Symbol, PERIOD_CURRENT, indicatorName);
+   int handle = iCustom(_Symbol, PERIOD_H1, indicatorName);
    if(handle == INVALID_HANDLE)
    {
       Print("Failed to create Heiken Ashi indicator handle: ", GetLastError());
@@ -1798,7 +1811,7 @@ bool AddEMAToChart()
    ENUM_APPLIED_PRICE Applied_Price = PRICE_CLOSE;
    
    // Create the indicator handle
-   int handle = iMA(_Symbol, PERIOD_CURRENT, MA_Period, 0, MA_Method, Applied_Price);
+   int handle = iMA(_Symbol, PERIOD_H1, MA_Period, 0, MA_Method, Applied_Price);
    if(handle == INVALID_HANDLE)
    {
       Print("Failed to create EMA indicator handle: ", GetLastError());
@@ -1836,7 +1849,7 @@ void OnTick()
    {
       string message = "WEEKEND DETECTED! Closing all positions and stopping trading until Monday.";
       Print(message);
-      Alert(message);
+      // Alert(message);
       CloseAllPositionsForAllSymbols();
       return; // Skip further processing
    }
@@ -1907,7 +1920,7 @@ void OnTick()
    {
       string message = "TRADING SESSION ENDED! Closing all positions until next session.";
       Print(message);
-      Alert(message);
+      // Alert(message);
       CloseAllPositionsForAllSymbols();
       return; // Skip further processing
    }
@@ -1943,7 +1956,7 @@ void OnTick()
    datetime currentTime = TimeCurrent();
    
    // Get current bar time for main chart (used for coordination)
-   datetime currentBarTime = iTime(_Symbol, PERIOD_CURRENT, 0);
+   datetime currentBarTime = iTime(_Symbol, PERIOD_H1, 0);
    
    // Process each symbol
    for(int i = 0; i < ArraySize(g_symbolTraders); i++)
