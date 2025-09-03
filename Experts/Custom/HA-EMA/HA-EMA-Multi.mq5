@@ -46,7 +46,6 @@ void SaveEAState()
    FileWriteString(fileHandle, "LastSaveTime," + IntegerToString(TimeCurrent()) + "\n");
    
    FileClose(fileHandle);
-   Print("EA state saved to: ", g_stateFileName);
 }
 
 //+------------------------------------------------------------------+
@@ -57,7 +56,7 @@ bool LoadEAState()
    int fileHandle = FileOpen(g_stateFileName, FILE_READ|FILE_TXT);
    if(fileHandle == INVALID_HANDLE)
    {
-      Print("INFO: No previous state file found. Starting with fresh state.");
+      // No previous state file found
       return false;
    }
    
@@ -99,17 +98,6 @@ bool LoadEAState()
    
    FileClose(fileHandle);
    
-   Print("EA state loaded from: ", g_stateFileName);
-   Print("  Last Day Checked: ", TimeToString(g_lastDayChecked));
-   Print("  Last Month Checked: ", TimeToString(g_lastMonthChecked));
-   Print("  Start Day Balance: $", DoubleToString(g_startDayBalance, 2));
-   Print("  Start Month Balance: $", DoubleToString(g_startMonthBalance, 2));
-   Print("  Monthly Peak Balance: $", DoubleToString(g_monthlyPeakBalance, 2));
-   Print("  Daily Target Reached: ", g_dailyTargetReached ? "YES" : "NO");
-   Print("  Monthly Target Reached: ", g_monthlyTargetReached ? "YES" : "NO");
-   Print("  Drawdown Reached: ", g_drawdownReached ? "YES" : "NO");
-   Print("  Consecutive Losses: ", g_consecutiveLosses);
-   
    return true;
 }
 
@@ -138,7 +126,6 @@ void SavePositionsToFile()
    }
    
    FileClose(fileHandle);
-   Print("Positions saved to: ", g_positionsFileName);
 }
 
 //+------------------------------------------------------------------+
@@ -149,7 +136,7 @@ void LoadPositionsFromFile()
    int fileHandle = FileOpen(g_positionsFileName, FILE_READ|FILE_TXT);
    if(fileHandle == INVALID_HANDLE)
    {
-      Print("INFO: No previous positions file found. Starting fresh.");
+      // No previous positions file found
       return;
    }
    
@@ -213,7 +200,6 @@ void LoadPositionsFromFile()
    }
    
    FileClose(fileHandle);
-   Print("Positions loaded from: ", g_positionsFileName, " (", positionsLoaded, " positions restored)");
 }
 
 // Input parameters - general
@@ -322,19 +308,6 @@ public:
          return false;
       }
       
-      // Print symbol info
-      double point = SymbolInfoDouble(m_symbol, SYMBOL_POINT);
-      double tickSize = SymbolInfoDouble(m_symbol, SYMBOL_TRADE_TICK_SIZE);
-      double tickValue = SymbolInfoDouble(m_symbol, SYMBOL_TRADE_TICK_VALUE);
-      double contractSize = SymbolInfoDouble(m_symbol, SYMBOL_TRADE_CONTRACT_SIZE);
-      
-      Print("Symbol Information for ", m_symbol, ":");
-      Print("  Point Size: ", DoubleToString(point, (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS)));
-      Print("  Tick Size: ", DoubleToString(tickSize, (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS)));
-      Print("  Tick Value: ", DoubleToString(tickValue, 6), " ", AccountInfoString(ACCOUNT_CURRENCY));
-      Print("  Contract Size: ", DoubleToString(contractSize, 2));
-      Print("  Magic Number: ", m_magicNumber);
-      
       return true;
    }
    
@@ -382,11 +355,6 @@ public:
          Print("Failed to copy EMA or price data for ", m_symbol);
          return false;
       }
-      
-      // Add debugging output to see actual values
-      Print("[", m_symbol, "] PRICE vs EMA CHECK: Price = ", DoubleToString(close[0], 2), 
-            ", EMA = ", DoubleToString(ema[0], 2), 
-            ", Price Above EMA = ", (close[0] > ema[0]) ? "TRUE" : "FALSE");
       
       return close[0] > ema[0];
    }
@@ -440,9 +408,6 @@ public:
          
          if(result)
          {
-            string message = "[" + m_symbol + "] POSITION CLOSED: Ticket #" + IntegerToString(ticket) + 
-                           ", Profit: $" + DoubleToString(posProfit, 2);
-            Print(message);
             
             totalProfit += posProfit;
             closed++;
@@ -469,12 +434,10 @@ public:
       
       if(closed > 0)
       {
-         string message = "[" + m_symbol + "] CLOSED " + IntegerToString(closed) + 
-                        " POSITIONS WITH TOTAL PROFIT: $" + DoubleToString(totalProfit, 2);
-         Print(message);
          if(MathAbs(totalProfit) > 5.0) // Only alert if profit/loss is significant
          {
-            Alert(message);
+            Alert("[" + m_symbol + "] CLOSED " + IntegerToString(closed) + 
+                  " POSITIONS WITH TOTAL PROFIT: $" + DoubleToString(totalProfit, 2));
          }
       }
    }
@@ -498,10 +461,6 @@ public:
       
       // Check trend strength using ADX
       bool trendIsStrong = IsTrendStrong();
-      if(!trendIsStrong)
-      {
-         Print("[", m_symbol, "] Signal detected but trend is weak - proceeding with caution");
-      }
       
       // Add RSI confirmation filter
       int rsiHandle = iRSI(m_symbol, PERIOD_CURRENT, 14, PRICE_CLOSE);
@@ -518,14 +477,12 @@ public:
             // If we have a sell signal (blue→red) but RSI is oversold (<30), consider skipping
             if(prevColor == 0 && currentColor == 1 && rsiValues[0] < 30)
             {
-               Print("[", m_symbol, "] Blue → Red but RSI is oversold (", DoubleToString(rsiValues[0], 1), 
-                     ") - potential false signal");
+               // potential false signal
             }
             // If we have a buy signal (red→blue) but RSI is overbought (>70), consider skipping
             else if(prevColor == 1 && currentColor == 0 && rsiValues[0] > 70)
             {
-               Print("[", m_symbol, "] Red → Blue but RSI is overbought (", DoubleToString(rsiValues[0], 1), 
-                     ") - potential false signal");
+               // potential false signal
             }
          }
          IndicatorRelease(rsiHandle);
@@ -563,7 +520,6 @@ public:
          // Check if we should only trade with the trend
          if(InpOnlyTradeWithTrend && isPriceAboveEMA)
          {
-            Print("[", m_symbol, "] Blue → Red but price ABOVE EMA: Skipping sell signal (trading with trend only)");
             return;
          }
          
@@ -572,12 +528,10 @@ public:
          {
             double doubleLotSize = NormalizeLotSize(baseLotSize * 2.0);
             lotSize = CalculateDynamicLotSize(doubleLotSize);
-            Print("[", m_symbol, "] Blue → Red & Price BELOW EMA: Using DOUBLE lot size ", lotSize);
          }
          else
          {
-            Print("[", m_symbol, "] Blue → Red & Price ", isPriceAboveEMA ? "ABOVE" : "BELOW", " EMA: Using NORMAL lot size ", lotSize, 
-                  (!isPriceAboveEMA && !InpUseDoubleLots) ? " (Double lots disabled)" : "");
+            
          }
          
          double pointsSL = 0, pointsTP = 0;
@@ -586,41 +540,18 @@ public:
          {
             double moneyPerPoint = tickValue / tickSize;
             pointsSL = (moneyPerPoint > 0 && lotSize > 0) ? InpStopLoss / (moneyPerPoint * lotSize) : 0;
-            
-            // Log the equivalent point distance for reference
-            Print("[", m_symbol, "] Sell order SL in points: ", DoubleToString(pointsSL, 1), 
-                  " (equivalent to $", DoubleToString(InpStopLoss, 2), " for lot size ", DoubleToString(lotSize, 2), ")");
          }
          
          if(InpTakeProfit > 0)
          {
             double moneyPerPoint = tickValue / tickSize;
             pointsTP = (moneyPerPoint > 0 && lotSize > 0) ? InpTakeProfit / (moneyPerPoint * lotSize) : 0;
-            
-            // Log the equivalent point distance for reference
-            Print("[", m_symbol, "] Sell order TP in points: ", DoubleToString(pointsTP, 1), 
-                  " (equivalent to $", DoubleToString(InpTakeProfit, 2), " for lot size ", DoubleToString(lotSize, 2), ")");
          }
-         
-         if(InpStopLoss <= 0 && InpTakeProfit <= 0)
-            Print("[", m_symbol, "] Sell signal - No SL/TP set. Position will be closed on next signal change or by PNL tracking.");
-         else
-            Print("[", m_symbol, "] Sell signal - Expected SL: $", DoubleToString(InpStopLoss, 2), 
-                  ", Expected TP: $", DoubleToString(InpTakeProfit, 2), 
-                  " (PNL will be tracked automatically)");
          
          // Place order without chart SL/TP, we'll manage via PNL tracking
          bool result = m_trade.Sell(lotSize, m_symbol, bid, 0, 0, "HA-EMA Sell");
          if(result)
          {
-            string message = "[" + m_symbol + "] SELL ORDER OPENED: Ticket #" + IntegerToString(m_trade.ResultOrder()) + 
-                           ", Lot Size: " + DoubleToString(lotSize, 2) + 
-                           ", SL: $" + DoubleToString(InpStopLoss, 2) + 
-                           ", TP: $" + DoubleToString(InpTakeProfit, 2);
-            
-            Print(message);
-            Alert(message);
-            
             // Track this position for SL/TP monitoring
             if(m_positionCount < ArraySize(m_positions))
             {
@@ -647,7 +578,6 @@ public:
          // Check if we should only trade with the trend
          if(InpOnlyTradeWithTrend && !isPriceAboveEMA)
          {
-            Print("[", m_symbol, "] Red → Blue but price BELOW EMA: Skipping buy signal (trading with trend only)");
             return;
          }
          
@@ -656,12 +586,9 @@ public:
          {
             double doubleLotSize = NormalizeLotSize(baseLotSize * 2.0);
             lotSize = CalculateDynamicLotSize(doubleLotSize);
-            Print("[", m_symbol, "] Red → Blue & Price ABOVE EMA: Using DOUBLE lot size ", lotSize);
          }
          else
          {
-            Print("[", m_symbol, "] Red → Blue & Price ", isPriceAboveEMA ? "ABOVE" : "BELOW", " EMA: Using NORMAL lot size ", lotSize,
-                  (isPriceAboveEMA && !InpUseDoubleLots) ? " (Double lots disabled)" : "");
          }
          
          double pointsSL = 0, pointsTP = 0;
@@ -670,41 +597,18 @@ public:
          {
             double moneyPerPoint = tickValue / tickSize;
             pointsSL = (moneyPerPoint > 0 && lotSize > 0) ? InpStopLoss / (moneyPerPoint * lotSize) : 0;
-            
-            // Log the equivalent point distance for reference
-            Print("[", m_symbol, "] Buy order SL in points: ", DoubleToString(pointsSL, 1), 
-                  " (equivalent to $", DoubleToString(InpStopLoss, 2), " for lot size ", DoubleToString(lotSize, 2), ")");
          }
          
          if(InpTakeProfit > 0)
          {
             double moneyPerPoint = tickValue / tickSize;
             pointsTP = (moneyPerPoint > 0 && lotSize > 0) ? InpTakeProfit / (moneyPerPoint * lotSize) : 0;
-            
-            // Log the equivalent point distance for reference
-            Print("[", m_symbol, "] Buy order TP in points: ", DoubleToString(pointsTP, 1), 
-                  " (equivalent to $", DoubleToString(InpTakeProfit, 2), " for lot size ", DoubleToString(lotSize, 2), ")");
          }
-         
-         if(InpStopLoss <= 0 && InpTakeProfit <= 0)
-            Print("[", m_symbol, "] Buy signal - No SL/TP set. Position will be closed on next signal change or by PNL tracking.");
-         else
-            Print("[", m_symbol, "] Buy signal - Expected SL: $", DoubleToString(InpStopLoss, 2), 
-                  ", Expected TP: $", DoubleToString(InpTakeProfit, 2), 
-                  " (PNL will be tracked automatically)");
          
          // Place order without chart SL/TP, we'll manage via PNL tracking
          bool result = m_trade.Buy(lotSize, m_symbol, ask, 0, 0, "HA-EMA Buy");
          if(result)
          {
-            string message = "[" + m_symbol + "] BUY ORDER OPENED: Ticket #" + IntegerToString(m_trade.ResultOrder()) + 
-                           ", Lot Size: " + DoubleToString(lotSize, 2) + 
-                           ", SL: $" + DoubleToString(InpStopLoss, 2) + 
-                           ", TP: $" + DoubleToString(InpTakeProfit, 2);
-                           
-            Print(message);
-            Alert(message);
-            
             // Track this position for SL/TP monitoring
             if(m_positionCount < ArraySize(m_positions))
             {
@@ -765,20 +669,6 @@ public:
                      double profit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
                      double closePrice = HistoryDealGetDouble(dealTicket, DEAL_PRICE);
                      
-                     // Calculate equivalent money move
-                     double priceDiff = MathAbs(closePrice - m_positions[i].openPrice);
-                     double tickSize = SymbolInfoDouble(m_symbol, SYMBOL_TRADE_TICK_SIZE);
-                     double tickValue = SymbolInfoDouble(m_symbol, SYMBOL_TRADE_TICK_VALUE);
-                     double point = SymbolInfoDouble(m_symbol, SYMBOL_POINT);
-                     double moneyValue = (priceDiff / point) * (tickValue / tickSize) * m_positions[i].lotSize;
-                     
-                     Print("[", m_symbol, "] Position #", m_positions[i].ticket, " was externally closed",
-                           ", Profit: $", DoubleToString(profit, 2),
-                           ", Expected SL: $", DoubleToString(m_positions[i].expectedSL, 2),
-                           ", Expected TP: $", DoubleToString(m_positions[i].expectedTP, 2),
-                           ", Actual move in money: $", DoubleToString(moneyValue, 2),
-                           ", Time open: ", timeOpenSeconds, " seconds");
-                           
                      historyFound = true;
                      break;
                   }
@@ -787,7 +677,7 @@ public:
             
             if(!historyFound)
             {
-               Print("[", m_symbol, "] Position #", m_positions[i].ticket, " was closed but details not found in history");
+               // Position closed but details not found
             }
             
             // Remove this position from tracking array
@@ -839,9 +729,6 @@ public:
             {
                double oldSL = m_positions[i].bestDynamicSL;
                m_positions[i].bestDynamicSL = trailingStopLevel;
-               Print("[", m_symbol, "] Applying trailing stop for position #", m_positions[i].ticket, 
-                     ", from $", DoubleToString(oldSL, 2), " to $", DoubleToString(trailingStopLevel, 2), 
-                     " (current profit: $", DoubleToString(profit, 2), ")");
             }
          }
          
@@ -867,10 +754,6 @@ public:
                {
                   // Update the position's best dynamic SL
                   m_positions[i].bestDynamicSL = currentDynamicSL;
-                  Print("[", m_symbol, "] Tightening SL for position #", m_positions[i].ticket, 
-                        " from $", DoubleToString(m_positions[i].bestDynamicSL, 2), 
-                        " to $", DoubleToString(currentDynamicSL, 2), 
-                        " (profit: $", DoubleToString(profit, 2), ")");
                }
             }
          }
@@ -882,17 +765,6 @@ public:
          
          // Always use the best (lowest) SL we've achieved for this position
          dynamicSLThreshold = m_positions[i].bestDynamicSL;
-         
-         // We don't need to log status on every tick
-         static int tickCounter = 0;
-         // Only log once every 1000 ticks to reduce log spam
-         // This can be completely removed if you want no position status logs
-         /* 
-         if(tickCounter++ % 1000 == 0)
-         {
-            Print("[", m_symbol, "] Position #", m_positions[i].ticket, " current PNL: $", DoubleToString(profit, 2));
-         }
-         */
          
          // Check if SL or TP is reached in dollar terms
          bool closePosition = false;
@@ -942,7 +814,6 @@ public:
                               ", By " + reason + 
                               ", Profit: $" + DoubleToString(profit, 2);
                
-               Print(message);
                Alert(message);
                
                // Update consecutive losses tracking
@@ -1023,14 +894,10 @@ public:
          if(atrValues[0] > avgAtr * 1.5)
          {
             calculatedLotSize = baseLotSize * 0.75; // Reduce size in high volatility
-            Print("[", m_symbol, "] High volatility detected. Reducing lot size from ", 
-                  DoubleToString(baseLotSize, 2), " to ", DoubleToString(calculatedLotSize, 2));
          }
          else if(atrValues[0] < avgAtr * 0.75)
          {
             calculatedLotSize = baseLotSize * 1.25; // Increase size in low volatility
-            Print("[", m_symbol, "] Low volatility detected. Increasing lot size from ", 
-                  DoubleToString(baseLotSize, 2), " to ", DoubleToString(calculatedLotSize, 2));
          }
       }
       
@@ -1038,8 +905,6 @@ public:
       if(g_consecutiveLosses > 2)
       {
          calculatedLotSize = baseLotSize * (1.0 - (0.1 * MathMin(g_consecutiveLosses - 2, 5)));
-         Print("[", m_symbol, "] Reducing lot size due to ", g_consecutiveLosses, " consecutive losses: ", 
-               DoubleToString(baseLotSize, 2), " to ", DoubleToString(calculatedLotSize, 2));
       }
       
       // Normalize the lot size to the allowed increments
@@ -1069,16 +934,6 @@ public:
       // Ensure minimum of 0.01 for safety
       normalizedLot = MathMax(0.01, normalizedLot);
       
-      // Debug log if there was a significant adjustment
-      if(MathAbs(normalizedLot - lotSize) > 0.001)
-      {
-         Print("[", m_symbol, "] Lot size normalized from ", DoubleToString(lotSize, 3), 
-               " to ", DoubleToString(normalizedLot, 2), 
-               " (min:", DoubleToString(minLot, 2), 
-               ", max:", DoubleToString(maxLot, 2), 
-               ", step:", DoubleToString(stepLot, 2), ")");
-      }
-      
       return normalizedLot;
    }
    
@@ -1103,9 +958,6 @@ public:
       // ADX > 20 typically indicates a stronger trend
       bool strongTrend = (adxValues[0] > 20);
       
-      if(!strongTrend)
-         Print("[", m_symbol, "] Weak trend detected (ADX: ", DoubleToString(adxValues[0], 1), "). Trade signals may be less reliable.");
-         
       return strongTrend;
    }
    
@@ -1169,12 +1021,6 @@ public:
          m_positions[m_positionCount].openTime = openTime;
          m_positions[m_positionCount].bestDynamicSL = bestDynamicSL;
          m_positionCount++;
-         
-         Print("[", m_symbol, "] Restored position tracking: Ticket #", ticket, 
-               ", Lot: ", DoubleToString(lotSize, 2),
-               ", Expected SL: $", DoubleToString(expectedSL, 2),
-               ", Expected TP: $", DoubleToString(expectedTP, 2),
-               ", Dynamic SL: $", DoubleToString(bestDynamicSL, 2));
       }
    }
 };
@@ -1816,16 +1662,6 @@ bool ParseSymbolList()
       return false;
    }
    
-   Print("Found ", g_symbolList.Total(), " valid symbols to trade: ");
-   string symbolsStr = "";
-   for(int i = 0; i < g_symbolList.Total(); i++)
-   {
-      symbolsStr += g_symbolList.At(i);
-      if(i < g_symbolList.Total() - 1)
-         symbolsStr += ", ";
-   }
-   Print(symbolsStr);
-   
    return true;
 }
 
@@ -1913,19 +1749,11 @@ int OnInit()
                                       indiaDT.year, indiaDT.mon, indiaDT.day, 
                                       indiaDT.hour, indiaDT.min, indiaDT.sec);
       
-      Print("Current Server Time: ", serverTimeStr);
-      Print("Current India Time:  ", indiaTimeStr, " (Offset: ", InpTimeZoneOffset, " hours)");
-      Print("Trading Session: ", InpSessionStart, " to ", InpSessionEnd, " (Indian trading hours)");
-      
       // Check if we're starting outside of session hours
       if(!IsWithinSession())
       {
          Print("WARNING: EA started outside of trading hours. Trading will be disabled until session start.");
       }
-   }
-   else
-   {
-      Print("Trading Session: No time restrictions");
    }
    
    // Print important information about SL/TP behavior
@@ -1937,7 +1765,6 @@ int OnInit()
       Print("WARNING: TakeProfit is set to 0. Positions will close on StopLoss or signal change.");
    
    // Add indicators to chart
-   Print("Adding indicators to chart...");
    if(!AddHeikenAshiToChart())
    {
       Print("WARNING: Failed to add Heiken Ashi indicator to chart, but EA will still function.");
@@ -1950,7 +1777,6 @@ int OnInit()
    
    // Redraw chart to ensure indicators are visible
    ChartRedraw();
-   Print("Indicators added. EA initialization complete.");
    
    // Create info panel if enabled
    if(InpShowInfoPanel)
@@ -1958,7 +1784,6 @@ int OnInit()
       UpdateInfoPanel(g_startDayBalance, g_startMonthBalance, g_monthlyPeakBalance,
                      g_dailyTargetReached, g_monthlyTargetReached, g_drawdownReached,
                      InpMaxDrawdown);
-      Print("Information panel created on chart.");
    }
    
    return(INIT_SUCCEEDED);
@@ -1977,17 +1802,7 @@ void OnDeinit(const int reason)
    if(InpShowInfoPanel)
    {
       RemoveInfoPanel();
-      Print("Information panel removed from chart.");
    }
-
-   // Report trading statistics
-   Print("Final trading statistics:");
-   Print("  Consecutive losses at end: ", g_consecutiveLosses);
-   Print("  Monthly profit: $", DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE) - g_startMonthBalance, 2));
-   Print("  Monthly peak balance: $", DoubleToString(g_monthlyPeakBalance, 2));
-   double currentDrawdown = g_monthlyPeakBalance - (AccountInfoDouble(ACCOUNT_BALANCE) + CalculateTotalUnrealizedProfit());
-   Print("  Current drawdown: $", DoubleToString(currentDrawdown, 2), " (", 
-         DoubleToString((currentDrawdown/g_monthlyPeakBalance)*100.0, 1), "%)");
 
    // Clean up symbol traders
    for(int i = 0; i < ArraySize(g_symbolTraders); i++)
@@ -2012,7 +1827,6 @@ void OnDeinit(const int reason)
    string haName = "Examples\\Heiken_Ashi";
    ChartIndicatorDelete(chartID, 0, haName);
    
-   Print("Indicators removed from chart");
    */
 }
 
@@ -2051,7 +1865,6 @@ bool AddHeikenAshiToChart()
       return false;
    }
    
-   Print("Heiken Ashi indicator added to chart successfully");
    return true;
 }
 
@@ -2089,7 +1902,6 @@ bool AddEMAToChart()
    // Unfortunately we can't change indicator properties directly in MQL5
    // The indicator will use default colors and line width
    
-   Print("EMA indicator added to chart successfully");
    return true;
 }
 

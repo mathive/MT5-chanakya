@@ -1,2 +1,49 @@
-/Logs
-/Profiles/Charts
+# MQL5 GitIgnore File
+
+# Compiled files
+*.ex5
+*.ex4
+
+# Log files
+/Logs/
+*.log
+
+# Profile and configuration files
+/Profiles/Charts/
+/Profiles/Community/
+/Profiles/SymbolSets/
+/Profiles/Templates/
+/Profiles/Tester/
+
+# Data files
+/Files/
+*.dat
+
+# Generated CSV files (EA state/position tracking)
+*.csv
+
+# Images and media (optional - comment out if you want to track them)
+/Images/
+
+# Market downloaded files
+/Market/
+
+# Backup files
+*.bak
+*~
+
+# Temporary files
+*.tmp
+*.temp
+
+# System files
+.DS_Store
+Thumbs.db
+
+# IDE files
+*.user
+*.sln.docstates
+*.suo
+
+# Services (optional)
+/Services/
