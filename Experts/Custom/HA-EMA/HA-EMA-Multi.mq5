@@ -2,9 +2,6 @@
 //|                                                      HA-EMA.mq5 |
 //|                                  Copyright 2025, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
-//|                                                                  |
-//| IMPORTANT: This EA is designed to work ONLY on H1 timeframe     |
-//| All calculations and indicators are locked to 1-hour period     |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
@@ -13,7 +10,211 @@
 #include <Trade\Trade.mqh>
 #include <Arrays\ArrayString.mqh>
 
+// Forward declarations for CSV functions
+void SaveEAState();
+bool LoadEAState();
+void SavePositionsToFile();
+void LoadPositionsFromFile();
+
 // We'll include the display file after all globals are defined
+
+//+------------------------------------------------------------------+
+//| Save EA state to CSV file                                        |
+//+------------------------------------------------------------------+
+void SaveEAState()
+{
+   int fileHandle = FileOpen(g_stateFileName, FILE_WRITE|FILE_TXT);
+   if(fileHandle == INVALID_HANDLE)
+   {
+      Print("ERROR: Failed to create state file: ", g_stateFileName, ", Error: ", GetLastError());
+      return;
+   }
+   
+   // Write header
+   FileWriteString(fileHandle, "Parameter,Value\n");
+   
+   // Write all important state variables
+   FileWriteString(fileHandle, "g_lastDayChecked," + IntegerToString(g_lastDayChecked) + "\n");
+   FileWriteString(fileHandle, "g_lastMonthChecked," + IntegerToString(g_lastMonthChecked) + "\n");
+   FileWriteString(fileHandle, "g_startDayBalance," + DoubleToString(g_startDayBalance, 2) + "\n");
+   FileWriteString(fileHandle, "g_startMonthBalance," + DoubleToString(g_startMonthBalance, 2) + "\n");
+   FileWriteString(fileHandle, "g_monthlyPeakBalance," + DoubleToString(g_monthlyPeakBalance, 2) + "\n");
+   FileWriteString(fileHandle, "g_dailyTargetReached," + IntegerToString(g_dailyTargetReached ? 1 : 0) + "\n");
+   FileWriteString(fileHandle, "g_monthlyTargetReached," + IntegerToString(g_monthlyTargetReached ? 1 : 0) + "\n");
+   FileWriteString(fileHandle, "g_drawdownReached," + IntegerToString(g_drawdownReached ? 1 : 0) + "\n");
+   FileWriteString(fileHandle, "g_consecutiveLosses," + IntegerToString(g_consecutiveLosses) + "\n");
+   FileWriteString(fileHandle, "LastSaveTime," + IntegerToString(TimeCurrent()) + "\n");
+   
+   FileClose(fileHandle);
+   Print("EA state saved to: ", g_stateFileName);
+}
+
+//+------------------------------------------------------------------+
+//| Load EA state from CSV file                                      |
+//+------------------------------------------------------------------+
+bool LoadEAState()
+{
+   int fileHandle = FileOpen(g_stateFileName, FILE_READ|FILE_TXT);
+   if(fileHandle == INVALID_HANDLE)
+   {
+      Print("INFO: No previous state file found. Starting with fresh state.");
+      return false;
+   }
+   
+   // Skip header
+   string headerLine = FileReadString(fileHandle);
+   
+   // Read state variables
+   while(!FileIsEnding(fileHandle))
+   {
+      string line = FileReadString(fileHandle);
+      if(StringLen(line) == 0) continue; // Skip empty lines
+      
+      string parts[];
+      int count = StringSplit(line, ',', parts);
+      if(count != 2) continue; // Skip malformed lines
+      
+      string param = parts[0];
+      string value = parts[1];
+         
+      if(param == "g_lastDayChecked")
+         g_lastDayChecked = (datetime)StringToInteger(value);
+      else if(param == "g_lastMonthChecked")
+         g_lastMonthChecked = (datetime)StringToInteger(value);
+      else if(param == "g_startDayBalance")
+         g_startDayBalance = StringToDouble(value);
+      else if(param == "g_startMonthBalance")
+         g_startMonthBalance = StringToDouble(value);
+      else if(param == "g_monthlyPeakBalance")
+         g_monthlyPeakBalance = StringToDouble(value);
+      else if(param == "g_dailyTargetReached")
+         g_dailyTargetReached = (StringToInteger(value) == 1);
+      else if(param == "g_monthlyTargetReached")
+         g_monthlyTargetReached = (StringToInteger(value) == 1);
+      else if(param == "g_drawdownReached")
+         g_drawdownReached = (StringToInteger(value) == 1);
+      else if(param == "g_consecutiveLosses")
+         g_consecutiveLosses = (int)StringToInteger(value);
+   }
+   
+   FileClose(fileHandle);
+   
+   Print("EA state loaded from: ", g_stateFileName);
+   Print("  Last Day Checked: ", TimeToString(g_lastDayChecked));
+   Print("  Last Month Checked: ", TimeToString(g_lastMonthChecked));
+   Print("  Start Day Balance: $", DoubleToString(g_startDayBalance, 2));
+   Print("  Start Month Balance: $", DoubleToString(g_startMonthBalance, 2));
+   Print("  Monthly Peak Balance: $", DoubleToString(g_monthlyPeakBalance, 2));
+   Print("  Daily Target Reached: ", g_dailyTargetReached ? "YES" : "NO");
+   Print("  Monthly Target Reached: ", g_monthlyTargetReached ? "YES" : "NO");
+   Print("  Drawdown Reached: ", g_drawdownReached ? "YES" : "NO");
+   Print("  Consecutive Losses: ", g_consecutiveLosses);
+   
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Save positions to CSV file                                       |
+//+------------------------------------------------------------------+
+void SavePositionsToFile()
+{
+   int fileHandle = FileOpen(g_positionsFileName, FILE_WRITE|FILE_TXT);
+   if(fileHandle == INVALID_HANDLE)
+   {
+      Print("ERROR: Failed to create positions file: ", g_positionsFileName, ", Error: ", GetLastError());
+      return;
+   }
+   
+   // Write header
+   FileWriteString(fileHandle, "Symbol,Ticket,OpenPrice,LotSize,ExpectedSL,ExpectedTP,OpenTime,BestDynamicSL,MagicNumber\n");
+   
+   // Save positions from all symbol traders
+   for(int s = 0; s < ArraySize(g_symbolTraders); s++)
+   {
+      if(g_symbolTraders[s] != NULL)
+      {
+         g_symbolTraders[s].SavePositionsToCSV(fileHandle);
+      }
+   }
+   
+   FileClose(fileHandle);
+   Print("Positions saved to: ", g_positionsFileName);
+}
+
+//+------------------------------------------------------------------+
+//| Load positions from CSV file                                     |
+//+------------------------------------------------------------------+
+void LoadPositionsFromFile()
+{
+   int fileHandle = FileOpen(g_positionsFileName, FILE_READ|FILE_TXT);
+   if(fileHandle == INVALID_HANDLE)
+   {
+      Print("INFO: No previous positions file found. Starting fresh.");
+      return;
+   }
+   
+   // Skip header line
+   if(!FileIsEnding(fileHandle))
+   {
+      string headerLine = FileReadString(fileHandle);
+   }
+   
+   int positionsLoaded = 0;
+   
+   // Read position data line by line
+   while(!FileIsEnding(fileHandle))
+   {
+      string line = FileReadString(fileHandle);
+      if(StringLen(line) == 0) continue;
+      
+      string parts[];
+      int count = StringSplit(line, ',', parts);
+      
+      if(count >= 9)  // We expect at least 9 fields
+      {
+         string symbol = parts[0];
+         string ticket = parts[1];
+         string openPrice = parts[2];
+         string lotSize = parts[3];
+         string expectedSL = parts[4];
+         string expectedTP = parts[5];
+         string openTime = parts[6];
+         string bestDynamicSL = parts[7];
+         string magicNumber = parts[8];
+         
+         // Find the appropriate symbol trader
+         for(int s = 0; s < ArraySize(g_symbolTraders); s++)
+         {
+            if(g_symbolTraders[s] != NULL && g_symbolTraders[s].GetSymbol() == symbol && 
+               g_symbolTraders[s].GetMagicNumber() == (int)StringToInteger(magicNumber))
+            {
+               // Verify position still exists
+               if(PositionSelectByTicket((ulong)StringToInteger(ticket)))
+               {
+                  g_symbolTraders[s].LoadPositionFromCSV(
+                     (ulong)StringToInteger(ticket),
+                     StringToDouble(openPrice),
+                     StringToDouble(lotSize),
+                     StringToDouble(expectedSL),
+                     StringToDouble(expectedTP),
+                     (datetime)StringToInteger(openTime),
+                     StringToDouble(bestDynamicSL)
+                  );
+                  positionsLoaded++;
+               }
+               else
+               {
+                  Print("WARNING: Position ", ticket, " for ", symbol, " no longer exists. Skipping.");
+               }
+               break;
+            }
+         }
+      }
+   }
+   
+   FileClose(fileHandle);
+   Print("Positions loaded from: ", g_positionsFileName, " (", positionsLoaded, " positions restored)");
+}
 
 // Input parameters - general
 input double   InpLotSize       = 0.02;     // Lot size
@@ -106,7 +307,7 @@ public:
    bool Initialize()
    {
       // Initialize Heiken Ashi indicator
-      m_heikenAshiHandle = iCustom(m_symbol, PERIOD_H1, "Examples\\Heiken_Ashi");
+      m_heikenAshiHandle = iCustom(m_symbol, PERIOD_CURRENT, "Examples\\Heiken_Ashi");
       if(m_heikenAshiHandle == INVALID_HANDLE)
       {
          Print("Failed to create Heiken Ashi indicator for symbol ", m_symbol);
@@ -114,7 +315,7 @@ public:
       }
       
       // Initialize EMA indicator
-      m_emaHandle = iMA(m_symbol, PERIOD_H1, InpEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+      m_emaHandle = iMA(m_symbol, PERIOD_CURRENT, InpEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
       if(m_emaHandle == INVALID_HANDLE)
       {
          Print("Failed to create EMA indicator for symbol ", m_symbol);
@@ -176,11 +377,16 @@ public:
       double close[1];
       
       if(!CopyBuffer(m_emaHandle, 0, 0, 1, ema) || 
-         !CopyClose(m_symbol, PERIOD_H1, 0, 1, close))
+         !CopyClose(m_symbol, PERIOD_CURRENT, 0, 1, close))
       {
          Print("Failed to copy EMA or price data for ", m_symbol);
          return false;
       }
+      
+      // Add debugging output to see actual values
+      Print("[", m_symbol, "] PRICE vs EMA CHECK: Price = ", DoubleToString(close[0], 2), 
+            ", EMA = ", DoubleToString(ema[0], 2), 
+            ", Price Above EMA = ", (close[0] > ema[0]) ? "TRUE" : "FALSE");
       
       return close[0] > ema[0];
    }
@@ -268,7 +474,7 @@ public:
          Print(message);
          if(MathAbs(totalProfit) > 5.0) // Only alert if profit/loss is significant
          {
-            // Alert(message);
+            Alert(message);
          }
       }
    }
@@ -298,7 +504,7 @@ public:
       }
       
       // Add RSI confirmation filter
-      int rsiHandle = iRSI(m_symbol, PERIOD_H1, 14, PRICE_CLOSE);
+      int rsiHandle = iRSI(m_symbol, PERIOD_CURRENT, 14, PRICE_CLOSE);
       if(rsiHandle == INVALID_HANDLE)
       {
          Print("[", m_symbol, "] Error: Could not create RSI indicator");
@@ -366,11 +572,11 @@ public:
          {
             double doubleLotSize = NormalizeLotSize(baseLotSize * 2.0);
             lotSize = CalculateDynamicLotSize(doubleLotSize);
-            Print("[", m_symbol, "] Blue → Red & EMA below price: Using DOUBLE lot size ", lotSize);
+            Print("[", m_symbol, "] Blue → Red & Price BELOW EMA: Using DOUBLE lot size ", lotSize);
          }
          else
          {
-            Print("[", m_symbol, "] Blue → Red & EMA ", isPriceAboveEMA ? "above" : "below", " price: Using NORMAL lot size ", lotSize, 
+            Print("[", m_symbol, "] Blue → Red & Price ", isPriceAboveEMA ? "ABOVE" : "BELOW", " EMA: Using NORMAL lot size ", lotSize, 
                   (!isPriceAboveEMA && !InpUseDoubleLots) ? " (Double lots disabled)" : "");
          }
          
@@ -413,7 +619,7 @@ public:
                            ", TP: $" + DoubleToString(InpTakeProfit, 2);
             
             Print(message);
-            // Alert(message);
+            Alert(message);
             
             // Track this position for SL/TP monitoring
             if(m_positionCount < ArraySize(m_positions))
@@ -450,11 +656,11 @@ public:
          {
             double doubleLotSize = NormalizeLotSize(baseLotSize * 2.0);
             lotSize = CalculateDynamicLotSize(doubleLotSize);
-            Print("[", m_symbol, "] Red → Blue & EMA above price: Using DOUBLE lot size ", lotSize);
+            Print("[", m_symbol, "] Red → Blue & Price ABOVE EMA: Using DOUBLE lot size ", lotSize);
          }
          else
          {
-            Print("[", m_symbol, "] Red → Blue & EMA ", isPriceAboveEMA ? "above" : "below", " price: Using NORMAL lot size ", lotSize,
+            Print("[", m_symbol, "] Red → Blue & Price ", isPriceAboveEMA ? "ABOVE" : "BELOW", " EMA: Using NORMAL lot size ", lotSize,
                   (isPriceAboveEMA && !InpUseDoubleLots) ? " (Double lots disabled)" : "");
          }
          
@@ -497,7 +703,7 @@ public:
                            ", TP: $" + DoubleToString(InpTakeProfit, 2);
                            
             Print(message);
-            // Alert(message);
+            Alert(message);
             
             // Track this position for SL/TP monitoring
             if(m_positionCount < ArraySize(m_positions))
@@ -737,7 +943,7 @@ public:
                               ", Profit: $" + DoubleToString(profit, 2);
                
                Print(message);
-               // Alert(message);
+               Alert(message);
                
                // Update consecutive losses tracking
                UpdateConsecutiveLossesCounter(profit);
@@ -788,7 +994,7 @@ public:
       double calculatedLotSize = baseLotSize;
       
       // Calculate ATR for volatility measurement
-      int atrHandle = iATR(m_symbol, PERIOD_H1, 14);
+      int atrHandle = iATR(m_symbol, PERIOD_CURRENT, 14);
       if(atrHandle == INVALID_HANDLE)
          return NormalizeLotSize(baseLotSize);
       
@@ -801,7 +1007,7 @@ public:
       IndicatorRelease(atrHandle);
       
       // Get 20-day average ATR for comparison
-      int atr20Handle = iATR(m_symbol, PERIOD_H1, 20);
+      int atr20Handle = iATR(m_symbol, PERIOD_CURRENT, 20);
       double atr20Values[20];
       
       if(atr20Handle != INVALID_HANDLE && CopyBuffer(atr20Handle, 0, 0, 20, atr20Values))
@@ -882,7 +1088,7 @@ public:
    bool IsTrendStrong()
    {
       // Use ADX to measure trend strength
-      int adxHandle = iADX(m_symbol, PERIOD_H1, 14);
+      int adxHandle = iADX(m_symbol, PERIOD_CURRENT, 14);
       if(adxHandle == INVALID_HANDLE)
          return true; // Default to true if we can't calculate
       
@@ -914,7 +1120,7 @@ public:
       
       // Get the last bar time for this symbol
       static datetime lastBarTime = 0;
-      datetime thisBarTime = iTime(m_symbol, PERIOD_H1, 0);
+      datetime thisBarTime = iTime(m_symbol, PERIOD_CURRENT, 0);
       
       // Only check for signals on a new bar
       if(thisBarTime != lastBarTime)
@@ -927,6 +1133,50 @@ public:
    // Getters
    string GetSymbol() { return m_symbol; }
    int GetMagicNumber() { return m_magicNumber; }
+   
+   // Save positions to CSV file
+   void SavePositionsToCSV(int fileHandle)
+   {
+      for(int i = 0; i < m_positionCount; i++)
+      {
+         string line = m_symbol + "," +
+                      IntegerToString(m_positions[i].ticket) + "," +
+                      DoubleToString(m_positions[i].openPrice, 6) + "," +
+                      DoubleToString(m_positions[i].lotSize, 2) + "," +
+                      DoubleToString(m_positions[i].expectedSL, 2) + "," +
+                      DoubleToString(m_positions[i].expectedTP, 2) + "," +
+                      IntegerToString(m_positions[i].openTime) + "," +
+                      DoubleToString(m_positions[i].bestDynamicSL, 2) + "," +
+                      IntegerToString(m_magicNumber) + "\n";
+         
+         FileWriteString(fileHandle, line);
+      }
+   }
+   
+   // Load position from CSV data
+   void LoadPositionFromCSV(ulong ticket, double openPrice, double lotSize, 
+                           double expectedSL, double expectedTP, datetime openTime, double bestDynamicSL)
+   {
+      if(m_positionCount < ArraySize(m_positions))
+      {
+         m_positions[m_positionCount].ticket = ticket;
+         m_positions[m_positionCount].openPrice = openPrice;
+         m_positions[m_positionCount].sl = 0;  // Not using chart SL/TP
+         m_positions[m_positionCount].tp = 0;  // Not using chart SL/TP
+         m_positions[m_positionCount].lotSize = lotSize;
+         m_positions[m_positionCount].expectedSL = expectedSL;
+         m_positions[m_positionCount].expectedTP = expectedTP;
+         m_positions[m_positionCount].openTime = openTime;
+         m_positions[m_positionCount].bestDynamicSL = bestDynamicSL;
+         m_positionCount++;
+         
+         Print("[", m_symbol, "] Restored position tracking: Ticket #", ticket, 
+               ", Lot: ", DoubleToString(lotSize, 2),
+               ", Expected SL: $", DoubleToString(expectedSL, 2),
+               ", Expected TP: $", DoubleToString(expectedTP, 2),
+               ", Dynamic SL: $", DoubleToString(bestDynamicSL, 2));
+      }
+   }
 };
 
 // Global variables
@@ -940,6 +1190,10 @@ bool           g_dailyTargetReached = false; // Whether we've reached daily targ
 bool           g_monthlyTargetReached = false; // Whether we've reached monthly target
 bool           g_drawdownReached = false;    // Whether maximum drawdown has been reached
 int            g_consecutiveLosses = 0;      // Track consecutive losing trades
+
+// Persistent state tracking
+string         g_stateFileName = "HA-EMA-State.csv";
+string         g_positionsFileName = "HA-EMA-Positions.csv";
 
 // Symbol traders array
 CArrayString g_symbolList;
@@ -1137,7 +1391,7 @@ void CheckAndResetDailyProfit()
          // Only alert if we had significant profit/loss
          if(MathAbs(prevDayProfit) > 10.0)
          {
-            // Alert(message);
+            Alert(message);
          }
       }
       
@@ -1148,7 +1402,7 @@ void CheckAndResetDailyProfit()
       string message = "NEW DAY DETECTED. Resetting daily profit tracking. Starting balance: $" + DoubleToString(g_startDayBalance, 2) + 
                     " (Daily target: $" + DoubleToString(InpDailyProfitTarget, 2) + " including unrealized profits)";
       Print(message);
-      // Alert(message);
+      Alert(message);
    }
 }
 
@@ -1193,7 +1447,7 @@ void CheckAndResetMonthlyProfit()
          
          Print(message);
          // Always alert for monthly summary
-         // Alert(message);
+         Alert(message);
       }
       
       g_startMonthBalance = AccountInfoDouble(ACCOUNT_BALANCE);
@@ -1211,7 +1465,7 @@ void CheckAndResetMonthlyProfit()
                       DoubleToString(g_startMonthBalance, 2) + 
                       " (Monthly target: $" + DoubleToString(InpMonthlyProfitTarget, 2) + ")";
       Print(message);
-      // Alert(message);
+      Alert(message);
    }
 }
 
@@ -1276,7 +1530,7 @@ bool CheckDailyProfitTarget()
          // Only alert at 50% and 75% to avoid too many alerts
          if(currentPercentage == 50 || currentPercentage == 75)
          {
-            // Alert(message);
+            Alert(message);
          }
          lastReportedPercentage = currentPercentage;
       }
@@ -1292,7 +1546,7 @@ bool CheckDailyProfitTarget()
                      ". Closing all positions and stopping trading for today.";
       
       Print(message);
-      // Alert(message);
+      Alert(message);
       
       // Close all open positions for all symbols
       for(int i = 0; i < ArraySize(g_symbolTraders); i++)
@@ -1365,7 +1619,7 @@ bool CheckMonthlyProfitTarget()
          // Alert at 50%, 75% and 90% to make trader aware of approaching target
          if(currentPercentage == 50 || currentPercentage == 75 || currentPercentage == 90)
          {
-            // Alert(message);
+            Alert(message);
          }
          lastReportedPercentage = currentPercentage;
       }
@@ -1381,7 +1635,7 @@ bool CheckMonthlyProfitTarget()
                      ". Closing all positions and stopping trading for the rest of the month.";
       
       Print(message);
-      // Alert(message);
+      Alert(message);
       
       // Close all open positions for all symbols
       for(int i = 0; i < ArraySize(g_symbolTraders); i++)
@@ -1470,7 +1724,7 @@ bool CheckMaxDrawdown()
          ((drawdown >= InpMaxDrawdown * 0.75) && (lastReportedDrawdown < InpMaxDrawdown * 0.75)) ||
          ((drawdown >= InpMaxDrawdown * 0.9) && (lastReportedDrawdown < InpMaxDrawdown * 0.9)))
       {
-         // Alert(message);
+         Alert(message);
       }
       
       lastReportedDrawdown = drawdown;
@@ -1486,7 +1740,7 @@ bool CheckMaxDrawdown()
                      ". Closing all positions and stopping trading for the rest of the month.";
       
       Print(message);
-      // Alert(message);
+      Alert(message);
       
       // Close all open positions for all symbols
       for(int i = 0; i < ArraySize(g_symbolTraders); i++)
@@ -1580,33 +1834,32 @@ bool ParseSymbolList()
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   // Ensure the EA only runs on H1 (1-hour) timeframe
-   if(Period() != PERIOD_H1)
-   {
-      Print("ERROR: This EA is designed to work only on H1 (1-hour) timeframe. Current timeframe: ", EnumToString((ENUM_TIMEFRAMES)Period()));
-      MessageBox("This Expert Advisor is optimized for H1 (1-hour) timeframe only.\nPlease switch to H1 chart and restart the EA.", "Timeframe Warning", MB_OK | MB_ICONWARNING);
-      return INIT_FAILED;
-   }
-   
-   Print("Timeframe validation passed: Running on H1 (1-hour) timeframe");
-   
    // Set the magic number for the display panel
    SetMagicNumber(InpMagicNumber);
    
    // Initialize hedging detection
    g_isHedging = ((ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE) == ACCOUNT_MARGIN_MODE_RETAIL_HEDGING);
    
+   // Load previous state if available
+   bool stateLoaded = LoadEAState();
+   
    // Initialize daily profit tracking
-   g_startDayBalance = AccountInfoDouble(ACCOUNT_BALANCE);
-   g_lastDayChecked = 0; // Force check and reset on first tick
-   g_dailyTargetReached = false;
+   if(!stateLoaded)
+   {
+      g_startDayBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+      g_lastDayChecked = 0; // Force check and reset on first tick
+      g_dailyTargetReached = false;
+   }
    
    // Initialize monthly profit tracking and drawdown protection
-   g_startMonthBalance = AccountInfoDouble(ACCOUNT_BALANCE);
-   g_monthlyPeakBalance = g_startMonthBalance;
-   g_lastMonthChecked = 0; // Force check and reset on first tick
-   g_monthlyTargetReached = false;
-   g_drawdownReached = false;
+   if(!stateLoaded)
+   {
+      g_startMonthBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+      g_monthlyPeakBalance = g_startMonthBalance;
+      g_lastMonthChecked = 0; // Force check and reset on first tick
+      g_monthlyTargetReached = false;
+      g_drawdownReached = false;
+   }
    
    // Parse symbol list
    if(!ParseSymbolList())
@@ -1629,6 +1882,9 @@ int OnInit()
          return INIT_FAILED;
       }
    }
+   
+   // Load positions from previous session if available
+   LoadPositionsFromFile();
    
    // Validate session time inputs
    if(InpUseSessionTime)
@@ -1713,6 +1969,10 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
+   // Save current state before shutdown
+   SaveEAState();
+   SavePositionsToFile();
+   
    // Remove info panel
    if(InpShowInfoPanel)
    {
@@ -1776,7 +2036,7 @@ bool AddHeikenAshiToChart()
    string indicatorName = "Examples\\Heiken_Ashi";
    
    // Create the indicator handle
-   int handle = iCustom(_Symbol, PERIOD_H1, indicatorName);
+   int handle = iCustom(_Symbol, PERIOD_CURRENT, indicatorName);
    if(handle == INVALID_HANDLE)
    {
       Print("Failed to create Heiken Ashi indicator handle: ", GetLastError());
@@ -1811,7 +2071,7 @@ bool AddEMAToChart()
    ENUM_APPLIED_PRICE Applied_Price = PRICE_CLOSE;
    
    // Create the indicator handle
-   int handle = iMA(_Symbol, PERIOD_H1, MA_Period, 0, MA_Method, Applied_Price);
+   int handle = iMA(_Symbol, PERIOD_CURRENT, MA_Period, 0, MA_Method, Applied_Price);
    if(handle == INVALID_HANDLE)
    {
       Print("Failed to create EMA indicator handle: ", GetLastError());
@@ -1849,7 +2109,7 @@ void OnTick()
    {
       string message = "WEEKEND DETECTED! Closing all positions and stopping trading until Monday.";
       Print(message);
-      // Alert(message);
+      Alert(message);
       CloseAllPositionsForAllSymbols();
       return; // Skip further processing
    }
@@ -1920,7 +2180,7 @@ void OnTick()
    {
       string message = "TRADING SESSION ENDED! Closing all positions until next session.";
       Print(message);
-      // Alert(message);
+      Alert(message);
       CloseAllPositionsForAllSymbols();
       return; // Skip further processing
    }
@@ -1956,7 +2216,7 @@ void OnTick()
    datetime currentTime = TimeCurrent();
    
    // Get current bar time for main chart (used for coordination)
-   datetime currentBarTime = iTime(_Symbol, PERIOD_H1, 0);
+   datetime currentBarTime = iTime(_Symbol, PERIOD_CURRENT, 0);
    
    // Process each symbol
    for(int i = 0; i < ArraySize(g_symbolTraders); i++)
