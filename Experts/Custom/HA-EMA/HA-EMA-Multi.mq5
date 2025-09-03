@@ -1,11 +1,15 @@
 //+------------------------------------------------------------------+
-//|                                                      HA-EMA.mq5 |
+//|                                                HA-EMA-Multi.mq5 |
 //|                                  Copyright 2025, MetaQuotes Ltd. |
 //|                                             https://www.mql5.com |
+//|                                                                  |
+//| IMPORTANT: This EA only works on H1 (1-hour) timeframe         |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
 #property version   "1.00"
+#property description "Heiken Ashi + EMA Multi-Symbol Trading EA"
+#property description "Works ONLY on H1 timeframe"
 
 #include <Trade\Trade.mqh>
 #include <Arrays\ArrayString.mqh>
@@ -293,7 +297,7 @@ public:
    bool Initialize()
    {
       // Initialize Heiken Ashi indicator
-      m_heikenAshiHandle = iCustom(m_symbol, PERIOD_CURRENT, "Examples\\Heiken_Ashi");
+      m_heikenAshiHandle = iCustom(m_symbol, PERIOD_H1, "Examples\\Heiken_Ashi");
       if(m_heikenAshiHandle == INVALID_HANDLE)
       {
          Print("Failed to create Heiken Ashi indicator for symbol ", m_symbol);
@@ -301,7 +305,7 @@ public:
       }
       
       // Initialize EMA indicator
-      m_emaHandle = iMA(m_symbol, PERIOD_CURRENT, InpEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+      m_emaHandle = iMA(m_symbol, PERIOD_H1, InpEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
       if(m_emaHandle == INVALID_HANDLE)
       {
          Print("Failed to create EMA indicator for symbol ", m_symbol);
@@ -350,7 +354,7 @@ public:
       double close[1];
       
       if(!CopyBuffer(m_emaHandle, 0, 0, 1, ema) || 
-         !CopyClose(m_symbol, PERIOD_CURRENT, 0, 1, close))
+         !CopyClose(m_symbol, PERIOD_H1, 0, 1, close))
       {
          Print("Failed to copy EMA or price data for ", m_symbol);
          return false;
@@ -463,7 +467,7 @@ public:
       bool trendIsStrong = IsTrendStrong();
       
       // Add RSI confirmation filter
-      int rsiHandle = iRSI(m_symbol, PERIOD_CURRENT, 14, PRICE_CLOSE);
+      int rsiHandle = iRSI(m_symbol, PERIOD_H1, 14, PRICE_CLOSE);
       if(rsiHandle == INVALID_HANDLE)
       {
          Print("[", m_symbol, "] Error: Could not create RSI indicator");
@@ -865,7 +869,7 @@ public:
       double calculatedLotSize = baseLotSize;
       
       // Calculate ATR for volatility measurement
-      int atrHandle = iATR(m_symbol, PERIOD_CURRENT, 14);
+      int atrHandle = iATR(m_symbol, PERIOD_H1, 14);
       if(atrHandle == INVALID_HANDLE)
          return NormalizeLotSize(baseLotSize);
       
@@ -878,7 +882,7 @@ public:
       IndicatorRelease(atrHandle);
       
       // Get 20-day average ATR for comparison
-      int atr20Handle = iATR(m_symbol, PERIOD_CURRENT, 20);
+      int atr20Handle = iATR(m_symbol, PERIOD_H1, 20);
       double atr20Values[20];
       
       if(atr20Handle != INVALID_HANDLE && CopyBuffer(atr20Handle, 0, 0, 20, atr20Values))
@@ -943,7 +947,7 @@ public:
    bool IsTrendStrong()
    {
       // Use ADX to measure trend strength
-      int adxHandle = iADX(m_symbol, PERIOD_CURRENT, 14);
+      int adxHandle = iADX(m_symbol, PERIOD_H1, 14);
       if(adxHandle == INVALID_HANDLE)
          return true; // Default to true if we can't calculate
       
@@ -972,7 +976,7 @@ public:
       
       // Get the last bar time for this symbol
       static datetime lastBarTime = 0;
-      datetime thisBarTime = iTime(m_symbol, PERIOD_CURRENT, 0);
+      datetime thisBarTime = iTime(m_symbol, PERIOD_H1, 0);
       
       // Only check for signals on a new bar
       if(thisBarTime != lastBarTime)
@@ -1670,6 +1674,15 @@ bool ParseSymbolList()
 //+------------------------------------------------------------------+
 int OnInit()
 {
+   // Check if the EA is running on H1 timeframe
+   if(Period() != PERIOD_H1)
+   {
+      Alert("ERROR: HA-EMA-Multi EA only works on H1 (1-hour) timeframe!");
+      Print("ERROR: Current timeframe is ", EnumToString((ENUM_TIMEFRAMES)Period()), 
+            ". Please switch to H1 timeframe and restart the EA.");
+      return INIT_FAILED;
+   }
+   
    // Set the magic number for the display panel
    SetMagicNumber(InpMagicNumber);
    
@@ -1850,7 +1863,7 @@ bool AddHeikenAshiToChart()
    string indicatorName = "Examples\\Heiken_Ashi";
    
    // Create the indicator handle
-   int handle = iCustom(_Symbol, PERIOD_CURRENT, indicatorName);
+   int handle = iCustom(_Symbol, PERIOD_H1, indicatorName);
    if(handle == INVALID_HANDLE)
    {
       Print("Failed to create Heiken Ashi indicator handle: ", GetLastError());
@@ -1884,7 +1897,7 @@ bool AddEMAToChart()
    ENUM_APPLIED_PRICE Applied_Price = PRICE_CLOSE;
    
    // Create the indicator handle
-   int handle = iMA(_Symbol, PERIOD_CURRENT, MA_Period, 0, MA_Method, Applied_Price);
+   int handle = iMA(_Symbol, PERIOD_H1, MA_Period, 0, MA_Method, Applied_Price);
    if(handle == INVALID_HANDLE)
    {
       Print("Failed to create EMA indicator handle: ", GetLastError());
@@ -2028,7 +2041,7 @@ void OnTick()
    datetime currentTime = TimeCurrent();
    
    // Get current bar time for main chart (used for coordination)
-   datetime currentBarTime = iTime(_Symbol, PERIOD_CURRENT, 0);
+   datetime currentBarTime = iTime(_Symbol, PERIOD_H1, 0);
    
    // Process each symbol
    for(int i = 0; i < ArraySize(g_symbolTraders); i++)
