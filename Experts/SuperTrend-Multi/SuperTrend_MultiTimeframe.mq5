@@ -17,7 +17,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Software Corp."
 #property link      "https://www.mql5.com"
-#property version   "1.02"
+#property version   "1.03"
 
 #include <Trade\Trade.mqh>
 #include "support\GetSpread.mqh"
@@ -106,7 +106,7 @@ datetime max_profit_hit_time = 0;
 
 // Order management timing
 datetime last_order_management_time = 0;
-const int ORDER_MANAGEMENT_INTERVAL = 5; // seconds between order management cycles
+const int ORDER_MANAGEMENT_INTERVAL = 15; // seconds between order management cycles (increased from 5)
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -132,7 +132,12 @@ int OnInit()
         
         if(tf_handles[i] == INVALID_HANDLE)
         {
+            Print("Failed to initialize SuperTrend handle for ", tf_names[i], " timeframe");
             return INIT_FAILED;
+        }
+        else
+        {
+            Print("Successfully initialized SuperTrend handle for ", tf_names[i], " timeframe - Handle: ", tf_handles[i]);
         }
     }
     Comment("Expert Advisor initialized. Initial spread: ", current_spread);
@@ -242,6 +247,10 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
+    // Only process ticks for the symbol this EA is attached to
+    if(_Symbol != Symbol())
+        return;
+        
     // Update current spread
     current_spread = GetSpread();
     
@@ -471,9 +480,9 @@ void CheckMaxLossProtection()
     // Check if max loss threshold is breached
     if(total_profit <= -MaxOverallLoss && position_count > 0)
     {
-        Print("MAX LOSS HIT! Total loss: $", DoubleToString(MathAbs(total_profit), 2), 
+        Print("MAX LOSS HIT for ", _Symbol, "! Total loss: $", DoubleToString(MathAbs(total_profit), 2), 
               " | Threshold: $", DoubleToString(MaxOverallLoss, 2));
-        Print("Closing all ", position_count, " positions and cancelling pending orders");
+        Print("Closing all ", position_count, " positions and cancelling pending orders for ", _Symbol);
         
         // Close all positions
         CloseAllPositions();
@@ -521,9 +530,9 @@ void CheckMaxProfitProtection()
     // Check if max profit threshold is reached
     if(total_profit >= MaxOverallProfit && position_count > 0)
     {
-        Print("MAX PROFIT HIT! Total profit: $", DoubleToString(total_profit, 2), 
+        Print("MAX PROFIT HIT for ", _Symbol, "! Total profit: $", DoubleToString(total_profit, 2), 
               " | Threshold: $", DoubleToString(MaxOverallProfit, 2));
-        Print("Closing all ", position_count, " positions and cancelling pending orders");
+        Print("Closing all ", position_count, " positions and cancelling pending orders for ", _Symbol);
         
         // Close all positions
         CloseAllPositions();
@@ -720,6 +729,20 @@ void ManageTimeframeOrders()
         // Current order status
         bool has_pending_order = tf_orders[i].is_active && OrderExists(tf_orders[i].ticket);
         
+        // Debug for M10 specifically
+        if(i == 4) // M10 is index 4
+        {
+            static datetime last_m10_debug = 0;
+            if(TimeCurrent() - last_m10_debug > 30) // Debug every 30 seconds
+            {
+                Print("M10 DEBUG - 30M Bullish: ", is_30m_bullish, " | 30M Bearish: ", is_30m_bearish);
+                Print("M10 DEBUG - TF Trend: ", tf_trend, " | Should Buy: ", should_have_buy_order, " | Should Sell: ", should_have_sell_order);  
+                Print("M10 DEBUG - Has Order: ", has_pending_order, " | Is Active: ", tf_orders[i].is_active, " | Ticket: ", tf_orders[i].ticket);
+                Print("M10 DEBUG - Completed: ", IsTimeframeCompleted(i), " | Order Count: ", CountOrdersForTimeframe(i));
+                last_m10_debug = TimeCurrent();
+            }
+        }
+        
         // If order was executed or cancelled, update tracking
         if(tf_orders[i].is_active && !OrderExists(tf_orders[i].ticket))
         {
@@ -771,7 +794,7 @@ void ManageTimeframeOrders()
                     if(current_line != tf_orders[i].last_line_price)
                     {
                         // Also check if the calculated order price is different from the last order price
-                        double min_price_change = _Point * 10; // Minimum 10 points change required for buy orders
+                        double min_price_change = _Point * 50; // Minimum 50 points change required for buy orders (increased from 10)
                         if(MathAbs(order_price - tf_orders[i].last_order_price) > min_price_change)
                         {
                             // Validate new price before modification
@@ -844,7 +867,7 @@ void ManageTimeframeOrders()
                     if(current_line != tf_orders[i].last_line_price)
                     {
                         // Also check if the calculated order price is different from the last order price
-                        double min_price_change = _Point * 10; // Minimum 10 points change required for sell orders
+                        double min_price_change = _Point * 50; // Minimum 50 points change required for sell orders (increased from 10)
                         if(MathAbs(order_price - tf_orders[i].last_order_price) > min_price_change)
                         {
                             // Validate new price before modification
