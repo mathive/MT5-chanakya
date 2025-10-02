@@ -295,11 +295,12 @@ void OnTick()
     // If trend changed, cancel all pending orders and close positions
     if(TrendChanged())
     {
-        Print("30M Trend changed to: ", Get30MTrendString());
+        Print("🔄 30M TREND CHANGE DETECTED - From previous to: ", Get30MTrendString());
         CancelAllPendingOrders();
         CloseAllPositions();
         UpdateTrendState();
         // Reset completion status when trend changes
+        Print("⚠️ Trend change triggered completion status reset");
         ResetCompletionStatus();
     }
     
@@ -794,6 +795,14 @@ void ManageTimeframeOrder(int i)
             {
                 PlaceBuyLimitOrder(i, order_price, current_line);
             }
+            else
+            {
+                if(i <= 1) // Debug for M1 and M2
+                {
+                    Print("BLOCKING ", tf_names[i], " buy order - Completed: ", IsTimeframeCompleted(i), 
+                          " | Order Count: ", CountOrdersForTimeframe(i));
+                }
+            }
         }
         else
         {
@@ -858,6 +867,14 @@ void ManageTimeframeOrder(int i)
             if(!IsTimeframeCompleted(i) && CountOrdersForTimeframe(i) == 0)
             {
                 PlaceSellLimitOrder(i, order_price, current_line);
+            }
+            else
+            {
+                if(i <= 1) // Debug for M1 and M2
+                {
+                    Print("BLOCKING ", tf_names[i], " sell order - Completed: ", IsTimeframeCompleted(i), 
+                          " | Order Count: ", CountOrdersForTimeframe(i));
+                }
             }
         }
         else
@@ -1549,9 +1566,10 @@ void LoadCompletionStatusFromCSV()
                         }
                     }
                     
-                    Print("Loaded status for ", tf_names[i], ": ", 
+                    Print("CSV LOAD - ", tf_names[i], ": ", 
                           (timeframe_completed[i] ? "COMPLETED" : "PENDING"),
-                          (profit_targets_loaded ? " with profit target: $" + DoubleToString(tf_profit_targets[i], 2) : ""));
+                          " | CSV Line: ", line,
+                          (profit_targets_loaded ? " | Profit Target: $" + DoubleToString(tf_profit_targets[i], 2) : ""));
                 }
             }
         }
@@ -1605,8 +1623,11 @@ bool IsTimeframeCompleted(int tf_index)
 //+------------------------------------------------------------------+
 void ResetCompletionStatus()
 {
+    Print("⚠️ RESETTING ALL COMPLETION STATUS - All timeframes marked as PENDING");
     for(int i = 0; i < 6; i++)
     {
+        if(timeframe_completed[i])
+            Print("  - ", tf_names[i], " changed from COMPLETED to PENDING");
         timeframe_completed[i] = false;
     }
     SaveCompletionStatusToCSV();
