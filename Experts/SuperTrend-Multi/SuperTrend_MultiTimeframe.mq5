@@ -17,11 +17,10 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Software Corp."
 #property link      "https://www.mql5.com"
-#property version   "1.03"
+#property version   "1.04"
 
 #include <Trade\Trade.mqh>
 #include "support\GetSpread.mqh"
-static datetime last_candle_time = 0;
 
 //--- Input parameters
 input group "=== Main Settings ==="
@@ -70,6 +69,9 @@ ENUM_TIMEFRAMES timeframes[] = {PERIOD_M1, PERIOD_M2, PERIOD_M3, PERIOD_M5, PERI
 string tf_names[] = {"M1", "M2", "M3", "M5", "M10", "M15"};
 int tf_handles[6];
 
+// Candle close tracking for each timeframe
+datetime last_candle_close_time[6];
+
 // Profit targets for each timeframe (calculated in OnInit)
 double tf_profit_targets[6];
 
@@ -104,9 +106,7 @@ bool max_profit_hit = false;
 double current_session_profit = 0.0;
 datetime max_profit_hit_time = 0;
 
-// Order management timing
-datetime last_order_management_time = 0;
-const int ORDER_MANAGEMENT_INTERVAL = 15; // seconds between order management cycles (increased from 5)
+// Candle close tracking - removed order management timing as we now use candle close events
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -155,6 +155,9 @@ int OnInit()
         tf_orders[i].last_line_price = 0;
         tf_orders[i].last_order_price = 0;
         tf_orders[i].order_type = ORDER_TYPE_BUY;
+        
+        // Initialize candle close times
+        last_candle_close_time[i] = iTime(_Symbol, timeframes[i], 0);
     }
     
     // Load completion status and profit targets from CSV
@@ -300,18 +303,33 @@ void OnTick()
         ResetCompletionStatus();
     }
     
-    // Update or place orders for all timeframes (with timing protection)
-    datetime current_time = TimeCurrent();
-    datetime current_candle_time = iTime(_Symbol, 0, 0);
-    
-    if (current_candle_time != last_candle_time || 
-        (current_time - last_order_management_time >= ORDER_MANAGEMENT_INTERVAL))
+    // Check each timeframe for new candle closes and manage orders accordingly
+    SynchronizeOrderTracking();
+    CheckTimeframesForNewCandles();
+}
+
+//+------------------------------------------------------------------+
+//| Check each timeframe for new candle closes                     |
+//+------------------------------------------------------------------+
+void CheckTimeframesForNewCandles()
+{
+    for(int i = 0; i < 6; i++)
     {
-        // Synchronize our tracking with actual broker orders before managing orders
-        SynchronizeOrderTracking();
-        ManageTimeframeOrders();
-        last_candle_time = current_candle_time;
-        last_order_management_time = current_time;
+        datetime current_candle_time = iTime(_Symbol, timeframes[i], 0);
+        
+        // Check if a new candle has formed on this timeframe
+        if(current_candle_time != last_candle_close_time[i])
+        {
+            // New candle detected - update order for this timeframe only
+            ManageTimeframeOrder(i);
+            last_candle_close_time[i] = current_candle_time;
+            
+            // Debug output for M10 specifically
+            if(i == 4) // M10 is index 4
+            {
+                Print("M10 New Candle Detected - Time: ", TimeToString(current_candle_time), " | Managing orders...");
+            }
+        }
     }
 }
 
@@ -704,208 +722,194 @@ void UpdateTrendState()
 }
 
 //+------------------------------------------------------------------+
-//| Manage orders for all timeframes                               |
+//| Manage order for a specific timeframe (called on candle close) |
 //+------------------------------------------------------------------+
-void ManageTimeframeOrders()
+void ManageTimeframeOrder(int i)
 {
-    for(int i = 0; i < 6; i++)
+    double trend_line[];
+    double trend_direction[];
+    ArraySetAsSeries(trend_line, true);
+    ArraySetAsSeries(trend_direction, true);
+    
+    if(CopyBuffer(tf_handles[i], 0, 0, 2, trend_line) < 2 ||
+       CopyBuffer(tf_handles[i], 2, 0, 2, trend_direction) < 2)
+        return;
+    
+    double current_line = trend_line[1];
+    double tf_trend = trend_direction[1];
+    
+    // Determine what type of order should be placed
+    bool should_have_buy_order = (is_30m_bullish && tf_trend == 0);  // 30M green AND timeframe green
+    bool should_have_sell_order = (is_30m_bearish && tf_trend == 1); // 30M red AND timeframe red
+    
+    // Current order status
+    bool has_pending_order = tf_orders[i].is_active && OrderExists(tf_orders[i].ticket);
+    
+    // Debug for M10 specifically
+    if(i == 4) // M10 is index 4
     {
-        double trend_line[];
-        double trend_direction[];
-        ArraySetAsSeries(trend_line, true);
-        ArraySetAsSeries(trend_direction, true);
+        Print("M10 CANDLE CLOSE - 30M Bullish: ", is_30m_bullish, " | 30M Bearish: ", is_30m_bearish);
+        Print("M10 CANDLE CLOSE - TF Trend: ", tf_trend, " | Should Buy: ", should_have_buy_order, " | Should Sell: ", should_have_sell_order);  
+        Print("M10 CANDLE CLOSE - Has Order: ", has_pending_order, " | SuperTrend Line: ", DoubleToString(current_line, _Digits));
+        Print("M10 CANDLE CLOSE - Completed: ", IsTimeframeCompleted(i), " | Order Count: ", CountOrdersForTimeframe(i));
+    }
+    
+    // If order was executed or cancelled, update tracking
+    if(tf_orders[i].is_active && !OrderExists(tf_orders[i].ticket))
+    {
+        tf_orders[i].is_active = false;
+        tf_orders[i].ticket = 0;
+        has_pending_order = false;
+    }
+    
+    if(should_have_buy_order)
+    {
+        double min_distance = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
         
-        if(CopyBuffer(tf_handles[i], 0, 0, 2, trend_line) < 2 ||
-           CopyBuffer(tf_handles[i], 2, 0, 2, trend_direction) < 2)
-            continue;
+        // Place Buy Limit order ABOVE SuperTrend line with spread buffer
+        double order_price = current_line + (current_spread * OrderBufferMultiplier);
         
-        double current_line = trend_line[1];
-        double tf_trend = trend_direction[1];
-        
-        // Determine what type of order should be placed
-        bool should_have_buy_order = (is_30m_bullish && tf_trend == 0);  // 30M green AND timeframe green
-        bool should_have_sell_order = (is_30m_bearish && tf_trend == 1); // 30M red AND timeframe red
-        
-        // Current order status
-        bool has_pending_order = tf_orders[i].is_active && OrderExists(tf_orders[i].ticket);
-        
-        // Debug for M10 specifically
-        if(i == 4) // M10 is index 4
+        // Ensure the order price meets broker minimum distance requirements
+        double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+        if(order_price <= ask - min_distance)
         {
-            static datetime last_m10_debug = 0;
-            if(TimeCurrent() - last_m10_debug > 30) // Debug every 30 seconds
-            {
-                Print("M10 DEBUG - 30M Bullish: ", is_30m_bullish, " | 30M Bearish: ", is_30m_bearish);
-                Print("M10 DEBUG - TF Trend: ", tf_trend, " | Should Buy: ", should_have_buy_order, " | Should Sell: ", should_have_sell_order);  
-                Print("M10 DEBUG - Has Order: ", has_pending_order, " | Is Active: ", tf_orders[i].is_active, " | Ticket: ", tf_orders[i].ticket);
-                Print("M10 DEBUG - Completed: ", IsTimeframeCompleted(i), " | Order Count: ", CountOrdersForTimeframe(i));
-                last_m10_debug = TimeCurrent();
-            }
+            // Price is valid, continue
+        }
+        else
+        {
+            // Adjust price to meet minimum requirements
+            order_price = ask - min_distance - SymbolInfoDouble(_Symbol, SYMBOL_POINT);
         }
         
-        // If order was executed or cancelled, update tracking
-        if(tf_orders[i].is_active && !OrderExists(tf_orders[i].ticket))
+        if(!has_pending_order)
         {
-            tf_orders[i].is_active = false;
-            tf_orders[i].ticket = 0;
-            has_pending_order = false;
-        }
-        
-        if(should_have_buy_order)
-        {
-            double min_distance = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-            
-            // Place Buy Limit order ABOVE SuperTrend line with spread buffer
-            // When price comes down to this level, it will buy
-            double order_price = current_line + (current_spread * OrderBufferMultiplier);
-            
-            // Ensure the order price meets broker minimum distance requirements
-            double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-            if(order_price <= ask - min_distance)
+            // Check if we need to cancel opposite type order first
+            if(tf_orders[i].is_active && tf_orders[i].order_type == ORDER_TYPE_SELL_LIMIT)
             {
-                // Price is valid, continue
-            }
-            else
-            {
-                // Adjust price to meet minimum requirements
-                order_price = ask - min_distance - SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+                CancelOrder(i);
             }
             
-            if(!has_pending_order)
+            // Only place new order if timeframe not completed and no existing orders
+            if(!IsTimeframeCompleted(i) && CountOrdersForTimeframe(i) == 0)
             {
-                // Check if we need to cancel opposite type order first
-                if(tf_orders[i].is_active && tf_orders[i].order_type == ORDER_TYPE_SELL_LIMIT)
-                {
-                    CancelOrder(i);
-                }
-                
-                // Only place new order if timeframe not completed and no existing orders
-                if(!IsTimeframeCompleted(i) && CountOrdersForTimeframe(i) == 0)
-                {
-                    PlaceBuyLimitOrder(i, order_price, current_line);
-                }
-            }
-            else
-            {
-                // Check if order type matches (buy order for buy condition)
-                if(tf_orders[i].order_type == ORDER_TYPE_BUY_LIMIT)
-                {
-                    // Check if SuperTrend line price has actually changed
-                    if(current_line != tf_orders[i].last_line_price)
-                    {
-                        // Also check if the calculated order price is different from the last order price
-                        double min_price_change = _Point * 200; // Minimum 200 points change required for buy orders (increased from 50)
-                        if(MathAbs(order_price - tf_orders[i].last_order_price) > min_price_change)
-                        {
-                            // Validate new price before modification
-                            if(IsValidBuyLimitPrice(order_price))
-                            {
-                                ModifyOrder(i, order_price);
-                                tf_orders[i].last_line_price = current_line;
-                                tf_orders[i].last_order_price = order_price;
-                            }
-                            else
-                            {
-                                CancelOrder(i);
-                            }
-                        }
-                        // If calculated price hasn't changed significantly, just update line price tracking
-                        else
-                        {
-                            tf_orders[i].last_line_price = current_line;
-                        }
-                    }
-                    // If line hasn't changed, no need to modify order
-                }
-                else
-                {
-                    // Wrong order type - cancel and place new one
-                    CancelOrder(i);
-                }
-            }
-        }
-        else if(should_have_sell_order)
-        {
-            double min_distance = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-            
-            // Place Sell Limit order BELOW SuperTrend line with spread buffer
-            // When price comes up to this level, it will sell
-            double order_price = current_line - (current_spread * OrderBufferMultiplier);
-            
-            // Ensure the order price meets broker minimum distance requirements
-            double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-            if(order_price >= bid + min_distance)
-            {
-                // Price is valid, continue
-            }
-            else
-            {
-                // Adjust price to meet minimum requirements
-                order_price = bid + min_distance + SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-            }
-            
-            if(!has_pending_order)
-            {
-                // Check if we need to cancel opposite type order first
-                if(tf_orders[i].is_active && tf_orders[i].order_type == ORDER_TYPE_BUY_LIMIT)
-                {
-                    CancelOrder(i);
-                }
-                
-                // Only place new order if timeframe not completed and no existing orders
-                if(!IsTimeframeCompleted(i) && CountOrdersForTimeframe(i) == 0)
-                {
-                    PlaceSellLimitOrder(i, order_price, current_line);
-                }
-            }
-            else
-            {
-                // Check if order type matches (sell order for sell condition)
-                if(tf_orders[i].order_type == ORDER_TYPE_SELL_LIMIT)
-                {
-                    // Check if SuperTrend line price has actually changed
-                    if(current_line != tf_orders[i].last_line_price)
-                    {
-                        // Also check if the calculated order price is different from the last order price
-                        double min_price_change = _Point * 200; // Minimum 200 points change required for sell orders (increased from 50)
-                        if(MathAbs(order_price - tf_orders[i].last_order_price) > min_price_change)
-                        {
-                            // Validate new price before modification
-                            if(IsValidSellLimitPrice(order_price))
-                            {
-                                ModifyOrder(i, order_price);
-                                tf_orders[i].last_line_price = current_line;
-                                tf_orders[i].last_order_price = order_price;
-                            }
-                            else
-                            {
-                                CancelOrder(i);
-                            }
-                        }
-                        // If calculated price hasn't changed significantly, just update line price tracking
-                        else
-                        {
-                            tf_orders[i].last_line_price = current_line;
-                        }
-                    }
-                    // If line hasn't changed, no need to modify order
-                }
-                else
-                {
-                    // Wrong order type - cancel and place new one
-                    CancelOrder(i);
-                }
+                PlaceBuyLimitOrder(i, order_price, current_line);
             }
         }
         else
         {
-            // Should not have order - cancel if exists
-            if(has_pending_order)
+            // Check if order type matches (buy order for buy condition)
+            if(tf_orders[i].order_type == ORDER_TYPE_BUY_LIMIT)
             {
+                // Check if SuperTrend line price has changed from last recorded price
+                if(current_line != tf_orders[i].last_line_price)
+                {
+                    // SuperTrend line changed - update order price
+                    if(IsValidBuyLimitPrice(order_price))
+                    {
+                        ModifyOrder(i, order_price);
+                        tf_orders[i].last_line_price = current_line;
+                        tf_orders[i].last_order_price = order_price;
+                        
+                        if(i == 4) // M10 debug
+                            Print("M10 Buy order modified - New price: ", DoubleToString(order_price, _Digits));
+                    }
+                    else
+                    {
+                        CancelOrder(i);
+                    }
+                }
+                // If line hasn't changed, keep existing order
+            }
+            else
+            {
+                // Wrong order type - cancel and place new one
                 CancelOrder(i);
             }
         }
     }
+    else if(should_have_sell_order)
+    {
+        double min_distance = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+        
+        // Place Sell Limit order BELOW SuperTrend line with spread buffer
+        double order_price = current_line - (current_spread * OrderBufferMultiplier);
+        
+        // Ensure the order price meets broker minimum distance requirements
+        double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+        if(order_price >= bid + min_distance)
+        {
+            // Price is valid, continue
+        }
+        else
+        {
+            // Adjust price to meet minimum requirements
+            order_price = bid + min_distance + SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+        }
+        
+        if(!has_pending_order)
+        {
+            // Check if we need to cancel opposite type order first
+            if(tf_orders[i].is_active && tf_orders[i].order_type == ORDER_TYPE_BUY_LIMIT)
+            {
+                CancelOrder(i);
+            }
+            
+            // Only place new order if timeframe not completed and no existing orders
+            if(!IsTimeframeCompleted(i) && CountOrdersForTimeframe(i) == 0)
+            {
+                PlaceSellLimitOrder(i, order_price, current_line);
+            }
+        }
+        else
+        {
+            // Check if order type matches (sell order for sell condition)
+            if(tf_orders[i].order_type == ORDER_TYPE_SELL_LIMIT)
+            {
+                // Check if SuperTrend line price has changed from last recorded price
+                if(current_line != tf_orders[i].last_line_price)
+                {
+                    // SuperTrend line changed - update order price
+                    if(IsValidSellLimitPrice(order_price))
+                    {
+                        ModifyOrder(i, order_price);
+                        tf_orders[i].last_line_price = current_line;
+                        tf_orders[i].last_order_price = order_price;
+                        
+                        if(i == 4) // M10 debug
+                            Print("M10 Sell order modified - New price: ", DoubleToString(order_price, _Digits));
+                    }
+                    else
+                    {
+                        CancelOrder(i);
+                    }
+                }
+                // If line hasn't changed, keep existing order
+            }
+            else
+            {
+                // Wrong order type - cancel and place new one
+                CancelOrder(i);
+            }
+        }
+    }
+    else
+    {
+        // Should not have order - cancel if exists
+        if(has_pending_order)
+        {
+            CancelOrder(i);
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Manage orders for all timeframes (legacy function - kept for compatibility) |
+//+------------------------------------------------------------------+
+void ManageTimeframeOrders()
+{
+    // This function is now replaced by CheckTimeframesForNewCandles()
+    // Orders are only updated when respective timeframe candles close
+    Print("ManageTimeframeOrders() called - functionality moved to candle-close based checking");
 }
 
 //+------------------------------------------------------------------+
