@@ -17,7 +17,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Software Corp."
 #property link      "https://www.mql5.com"
-#property version   "1.04"
+#property version   "1.05"
 
 #include <Trade\Trade.mqh>
 #include "support\GetSpread.mqh"
@@ -876,12 +876,21 @@ void ManageTimeframeOrder(int i)
                     // SuperTrend line changed - update order price
                     if(IsValidBuyLimitPrice(order_price))
                     {
-                        ModifyOrder(i, order_price);
-                        tf_orders[i].last_line_price = current_line;
-                        tf_orders[i].last_order_price = order_price;
-                        
-                        if(i == 4) // M10 debug
-                            Print("M10 Buy order modified - New price: ", DoubleToString(order_price, _Digits));
+                        // Only modify if the calculated price is actually different from current order price
+                        if(MathAbs(order_price - tf_orders[i].last_order_price) > _Point)
+                        {
+                            ModifyOrder(i, order_price);
+                            tf_orders[i].last_line_price = current_line;
+                            tf_orders[i].last_order_price = order_price;
+                            
+                            if(i == 4) // M10 debug
+                                Print("M10 Buy order modified - New price: ", DoubleToString(order_price, _Digits));
+                        }
+                        else
+                        {
+                            // Price hasn't changed enough to warrant modification
+                            tf_orders[i].last_line_price = current_line; // Update line price tracking
+                        }
                     }
                     else
                     {
@@ -949,12 +958,21 @@ void ManageTimeframeOrder(int i)
                     // SuperTrend line changed - update order price
                     if(IsValidSellLimitPrice(order_price))
                     {
-                        ModifyOrder(i, order_price);
-                        tf_orders[i].last_line_price = current_line;
-                        tf_orders[i].last_order_price = order_price;
-                        
-                        if(i == 4) // M10 debug
-                            Print("M10 Sell order modified - New price: ", DoubleToString(order_price, _Digits));
+                        // Only modify if the calculated price is actually different from current order price
+                        if(MathAbs(order_price - tf_orders[i].last_order_price) > _Point)
+                        {
+                            ModifyOrder(i, order_price);
+                            tf_orders[i].last_line_price = current_line;
+                            tf_orders[i].last_order_price = order_price;
+                            
+                            if(i == 4) // M10 debug
+                                Print("M10 Sell order modified - New price: ", DoubleToString(order_price, _Digits));
+                        }
+                        else
+                        {
+                            // Price hasn't changed enough to warrant modification
+                            tf_orders[i].last_line_price = current_line; // Update line price tracking
+                        }
                     }
                     else
                     {
