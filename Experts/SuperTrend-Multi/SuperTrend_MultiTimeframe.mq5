@@ -794,7 +794,7 @@ void ManageTimeframeOrders()
                     if(current_line != tf_orders[i].last_line_price)
                     {
                         // Also check if the calculated order price is different from the last order price
-                        double min_price_change = _Point * 50; // Minimum 50 points change required for buy orders (increased from 10)
+                        double min_price_change = _Point * 200; // Minimum 200 points change required for buy orders (increased from 50)
                         if(MathAbs(order_price - tf_orders[i].last_order_price) > min_price_change)
                         {
                             // Validate new price before modification
@@ -867,7 +867,7 @@ void ManageTimeframeOrders()
                     if(current_line != tf_orders[i].last_line_price)
                     {
                         // Also check if the calculated order price is different from the last order price
-                        double min_price_change = _Point * 50; // Minimum 50 points change required for sell orders (increased from 10)
+                        double min_price_change = _Point * 200; // Minimum 200 points change required for sell orders (increased from 50)
                         if(MathAbs(order_price - tf_orders[i].last_order_price) > min_price_change)
                         {
                             // Validate new price before modification
