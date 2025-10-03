@@ -17,7 +17,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Software Corp."
 #property link      "https://www.mql5.com"
-#property version   "1.03"
+#property version   "1.07"
 
 #include <Trade\Trade.mqh>
 #include "support\GetSpread.mqh"
@@ -106,7 +106,7 @@ datetime max_profit_hit_time = 0;
 
 // Order management timing
 datetime last_order_management_time = 0;
-const int ORDER_MANAGEMENT_INTERVAL = 15; // seconds between order management cycles (increased from 5)
+const int ORDER_MANAGEMENT_INTERVAL = 60; // Check and update orders every 1 minute
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -755,8 +755,10 @@ void ManageTimeframeOrders()
         {
             double min_distance = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
             
-            // Place Buy Limit order ABOVE SuperTrend line with spread buffer
-            // When price comes down to this level, it will buy
+            // SIMPLIFIED ORDER PRICING LOGIC:
+            // 1. Get SuperTrend line price (current_line)
+            // 2. Add spread buffer: current_spread * OrderBufferMultiplier
+            // 3. Update orders every 1 minute if price changed
             double order_price = current_line + (current_spread * OrderBufferMultiplier);
             
             // Ensure the order price meets broker minimum distance requirements
@@ -790,32 +792,25 @@ void ManageTimeframeOrders()
                 // Check if order type matches (buy order for buy condition)
                 if(tf_orders[i].order_type == ORDER_TYPE_BUY_LIMIT)
                 {
-                    // Check if SuperTrend line price has actually changed
-                    if(current_line != tf_orders[i].last_line_price)
+                    // Simple logic: Check if the new calculated price is different from current order price
+                    if(MathAbs(order_price - tf_orders[i].last_order_price) > _Point)
                     {
-                        // Also check if the calculated order price is different from the last order price
-                        double min_price_change = _Point * 200; // Minimum 200 points change required for buy orders (increased from 50)
-                        if(MathAbs(order_price - tf_orders[i].last_order_price) > min_price_change)
+                        // Validate new price before modification
+                        if(IsValidBuyLimitPrice(order_price))
                         {
-                            // Validate new price before modification
-                            if(IsValidBuyLimitPrice(order_price))
-                            {
-                                ModifyOrder(i, order_price);
-                                tf_orders[i].last_line_price = current_line;
-                                tf_orders[i].last_order_price = order_price;
-                            }
-                            else
-                            {
-                                CancelOrder(i);
-                            }
+                            Print("Updating ", tf_names[i], " buy order: ", DoubleToString(tf_orders[i].last_order_price, _Digits), 
+                                  " -> ", DoubleToString(order_price, _Digits));
+                            ModifyOrder(i, order_price);
+                            tf_orders[i].last_line_price = current_line;
+                            tf_orders[i].last_order_price = order_price;
                         }
-                        // If calculated price hasn't changed significantly, just update line price tracking
                         else
                         {
-                            tf_orders[i].last_line_price = current_line;
+                            Print("New price invalid for ", tf_names[i], " - Cancelling order");
+                            CancelOrder(i);
                         }
                     }
-                    // If line hasn't changed, no need to modify order
+                    // If price hasn't changed, do nothing
                 }
                 else
                 {
@@ -828,8 +823,10 @@ void ManageTimeframeOrders()
         {
             double min_distance = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
             
-            // Place Sell Limit order BELOW SuperTrend line with spread buffer
-            // When price comes up to this level, it will sell
+            // SIMPLIFIED ORDER PRICING LOGIC:
+            // 1. Get SuperTrend line price (current_line)
+            // 2. Subtract spread buffer: current_spread * OrderBufferMultiplier
+            // 3. Update orders every 1 minute if price changed
             double order_price = current_line - (current_spread * OrderBufferMultiplier);
             
             // Ensure the order price meets broker minimum distance requirements
@@ -863,32 +860,25 @@ void ManageTimeframeOrders()
                 // Check if order type matches (sell order for sell condition)
                 if(tf_orders[i].order_type == ORDER_TYPE_SELL_LIMIT)
                 {
-                    // Check if SuperTrend line price has actually changed
-                    if(current_line != tf_orders[i].last_line_price)
+                    // Simple logic: Check if the new calculated price is different from current order price
+                    if(MathAbs(order_price - tf_orders[i].last_order_price) > _Point)
                     {
-                        // Also check if the calculated order price is different from the last order price
-                        double min_price_change = _Point * 200; // Minimum 200 points change required for sell orders (increased from 50)
-                        if(MathAbs(order_price - tf_orders[i].last_order_price) > min_price_change)
+                        // Validate new price before modification
+                        if(IsValidSellLimitPrice(order_price))
                         {
-                            // Validate new price before modification
-                            if(IsValidSellLimitPrice(order_price))
-                            {
-                                ModifyOrder(i, order_price);
-                                tf_orders[i].last_line_price = current_line;
-                                tf_orders[i].last_order_price = order_price;
-                            }
-                            else
-                            {
-                                CancelOrder(i);
-                            }
+                            Print("Updating ", tf_names[i], " sell order: ", DoubleToString(tf_orders[i].last_order_price, _Digits), 
+                                  " -> ", DoubleToString(order_price, _Digits));
+                            ModifyOrder(i, order_price);
+                            tf_orders[i].last_line_price = current_line;
+                            tf_orders[i].last_order_price = order_price;
                         }
-                        // If calculated price hasn't changed significantly, just update line price tracking
                         else
                         {
-                            tf_orders[i].last_line_price = current_line;
+                            Print("New price invalid for ", tf_names[i], " - Cancelling order");
+                            CancelOrder(i);
                         }
                     }
-                    // If line hasn't changed, no need to modify order
+                    // If price hasn't changed, do nothing
                 }
                 else
                 {
@@ -1018,7 +1008,11 @@ void PlaceSellLimitOrder(int tf_index, double price, double line_value)
 //+------------------------------------------------------------------+
 void ModifyOrder(int tf_index, double new_price)
 {
-    trade.OrderModify(tf_orders[tf_index].ticket, new_price, 0, 0, ORDER_TIME_GTC, 0);
+    // Simple modification - just update the order price
+    if(!trade.OrderModify(tf_orders[tf_index].ticket, new_price, 0, 0, ORDER_TIME_GTC, 0))
+    {
+        Print("Failed to modify order for ", tf_names[tf_index], " - Error: ", trade.ResultRetcode());
+    }
 }
 
 //+------------------------------------------------------------------+
