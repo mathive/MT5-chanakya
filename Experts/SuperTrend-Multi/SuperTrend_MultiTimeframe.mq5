@@ -17,10 +17,11 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Software Corp."
 #property link      "https://www.mql5.com"
-#property version   "1.06"
+#property version   "1.03"
 
 #include <Trade\Trade.mqh>
 #include "support\GetSpread.mqh"
+static datetime last_candle_time = 0;
 
 //--- Input parameters
 input group "=== Main Settings ==="
@@ -45,6 +46,7 @@ input bool     EnableMaxLossProtection = true;   // Enable maximum loss protecti
 input double   MaxOverallProfit = 360.0;          // Maximum overall profit in USD before closing all positions (0 = unlimited)
 input bool     EnableMaxProfitProtection = true; // Enable maximum profit protection
 
+
 //--- Global variables
 CTrade trade;
 
@@ -67,9 +69,6 @@ double current_spread = 0.0;
 ENUM_TIMEFRAMES timeframes[] = {PERIOD_M1, PERIOD_M2, PERIOD_M3, PERIOD_M5, PERIOD_M10, PERIOD_M15};
 string tf_names[] = {"M1", "M2", "M3", "M5", "M10", "M15"};
 int tf_handles[6];
-
-// Candle close tracking for each timeframe
-datetime last_candle_close_time[6];
 
 // Profit targets for each timeframe (calculated in OnInit)
 double tf_profit_targets[6];
@@ -105,10 +104,9 @@ bool max_profit_hit = false;
 double current_session_profit = 0.0;
 datetime max_profit_hit_time = 0;
 
-// Order placement lock to prevent race conditions
-bool order_placement_in_progress[6] = {false, false, false, false, false, false};
-
-// Candle close tracking - removed order management timing as we now use candle close events
+// Order management timing
+datetime last_order_management_time = 0;
+const int ORDER_MANAGEMENT_INTERVAL = 15; // seconds between order management cycles (increased from 5)
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -134,11 +132,12 @@ int OnInit()
         
         if(tf_handles[i] == INVALID_HANDLE)
         {
+            Print("Failed to initialize SuperTrend handle for ", tf_names[i], " timeframe");
             return INIT_FAILED;
         }
         else
         {
-            
+            Print("Successfully initialized SuperTrend handle for ", tf_names[i], " timeframe - Handle: ", tf_handles[i]);
         }
     }
     Comment("Expert Advisor initialized. Initial spread: ", current_spread);
@@ -156,9 +155,6 @@ int OnInit()
         tf_orders[i].last_line_price = 0;
         tf_orders[i].last_order_price = 0;
         tf_orders[i].order_type = ORDER_TYPE_BUY;
-        
-        // Initialize candle close times
-        last_candle_close_time[i] = iTime(_Symbol, timeframes[i], 0);
     }
     
     // Load completion status and profit targets from CSV
@@ -186,7 +182,10 @@ int OnInit()
     }
     for(int i = 0; i < 6; i++)
     {
-        
+        if(tf_profit_targets[i] == 0.0)
+            Print(tf_names[i], ": Unlimited profit target");
+        else
+            Print(tf_names[i], ": $", DoubleToString(tf_profit_targets[i], 2));
     }
     
     // Reset completion status if requested
@@ -201,22 +200,13 @@ int OnInit()
     // Synchronize existing orders with CSV (update CSV to match broker state)
     SynchronizeOrdersWithCSV();
     
-    // Validate completion status - check if completed timeframes actually have positions
-    ValidateCompletionStatus();
-    
-    // Check 30M trend and align all orders with it
-    if(Check30MinuteTrend())
-    {
-        AlignOrdersWithTrend();
-    }
-    
     // Initialize max loss protection
     if(EnableMaxLossProtection)
     {
         max_loss_hit = false;
         current_session_loss = 0.0;
         max_loss_hit_time = 0;
-        
+        Print("Max loss protection enabled - Threshold: $", DoubleToString(MaxOverallLoss, 2));
     }
     
     // Initialize max profit protection
@@ -225,9 +215,13 @@ int OnInit()
         max_profit_hit = false;
         current_session_profit = 0.0;
         max_profit_hit_time = 0;
-        
+        if(MaxOverallProfit > 0.0)
+            Print("Max profit protection enabled - Threshold: $", DoubleToString(MaxOverallProfit, 2));
+        else
+            Print("Max profit protection disabled - MaxOverallProfit set to 0 (unlimited)");
     }
-
+    
+    Print("SuperTrend Multi-Timeframe EA initialized successfully");
     return INIT_SUCCEEDED;
 }
 
@@ -282,7 +276,10 @@ void OnTick()
         static datetime last_warning = 0;
         if(TimeCurrent() - last_warning > 300) // Print warning every 5 minutes
         {
-            
+            if(max_loss_hit)
+                Print("Max loss protection active - waiting for major trend change to resume trading");
+            if(max_profit_hit)
+                Print("Max profit protection active - waiting for major trend change to resume trading");
             last_warning = TimeCurrent();
         }
         return;
@@ -295,93 +292,26 @@ void OnTick()
     // If trend changed, cancel all pending orders and close positions
     if(TrendChanged())
     {
-        
+        Print("30M Trend changed to: ", Get30MTrendString());
         CancelAllPendingOrders();
         CloseAllPositions();
         UpdateTrendState();
         // Reset completion status when trend changes
-        
         ResetCompletionStatus();
     }
     
-    // Check each timeframe for new candle closes and manage orders accordingly
-    SynchronizeOrderTracking();
+    // Update or place orders for all timeframes (with timing protection)
+    datetime current_time = TimeCurrent();
+    datetime current_candle_time = iTime(_Symbol, 0, 0);
     
-    // Clean up any duplicate orders before processing new ones
-    static datetime last_cleanup = 0;
-    if(TimeCurrent() - last_cleanup > 30) // Run cleanup every 30 seconds
+    if (current_candle_time != last_candle_time || 
+        (current_time - last_order_management_time >= ORDER_MANAGEMENT_INTERVAL))
     {
-        CleanupDuplicateOrders();
-        last_cleanup = TimeCurrent();
-    }
-    
-    CheckTimeframesForNewCandles();
-}
-
-//+------------------------------------------------------------------+
-//| Remove duplicate orders for the same timeframe                 |
-//+------------------------------------------------------------------+
-void CleanupDuplicateOrders()
-{
-    for(int tf = 0; tf < 6; tf++)
-    {
-        string buy_comment = "ST_BuyLimit_" + tf_names[tf];
-        string sell_comment = "ST_SellLimit_" + tf_names[tf];
-        
-        // Find all orders for this timeframe
-        ulong found_tickets[];
-        int found_count = 0;
-        
-        for(int i = 0; i < OrdersTotal(); i++)
-        {
-            if(OrderGetTicket(i) > 0)
-            {
-                if(OrderGetString(ORDER_SYMBOL) == _Symbol &&
-                   OrderGetInteger(ORDER_MAGIC) == Magic)
-                {
-                    string order_comment = OrderGetString(ORDER_COMMENT);
-                    if(StringFind(order_comment, buy_comment) >= 0 || 
-                       StringFind(order_comment, sell_comment) >= 0)
-                    {
-                        ArrayResize(found_tickets, found_count + 1);
-                        found_tickets[found_count] = OrderGetTicket(i);
-                        found_count++;
-                    }
-                }
-            }
-        }
-        
-        // If more than 1 order found, cancel the extras (keep the first one)
-        if(found_count > 1)
-        {
-
-            for(int j = 1; j < found_count; j++) // Start from 1 to keep the first order
-            {
-                if(trade.OrderDelete(found_tickets[j]))
-                {
-                    
-                }
-            }
-        }
-    }
-}
-
-//+------------------------------------------------------------------+
-//| Check each timeframe for new candle closes                     |
-//+------------------------------------------------------------------+
-void CheckTimeframesForNewCandles()
-{
-    for(int i = 0; i < 6; i++)
-    {
-        datetime current_candle_time = iTime(_Symbol, timeframes[i], 0);
-        
-        // Check if a new candle has formed on this timeframe
-        if(current_candle_time != last_candle_close_time[i])
-        {
-            // New candle detected - update order for this timeframe only
-            ManageTimeframeOrder(i);
-            last_candle_close_time[i] = current_candle_time;
-        }
+        // Synchronize our tracking with actual broker orders before managing orders
+        SynchronizeOrderTracking();
+        ManageTimeframeOrders();
+        last_candle_time = current_candle_time;
+        last_order_management_time = current_time;
     }
 }
 
@@ -401,7 +331,7 @@ void CheckForExecutedOrders()
                 // Check if it was executed by looking for a position with our magic number
                 bool order_executed = false;
                 
-                // Check for positions opened with our magic number from this specific order
+                // Check for positions opened with our magic number
                 for(int p = 0; p < PositionsTotal(); p++)
                 {
                     if(PositionGetTicket(p) > 0)
@@ -410,23 +340,11 @@ void CheckForExecutedOrders()
                            PositionGetString(POSITION_SYMBOL) == _Symbol)
                         {
                             string comment = PositionGetString(POSITION_COMMENT);
-                            // More precise matching - must be exact comment match for this timeframe's order
-                            if(comment == "ST_BuyLimit_" + tf_names[i] || comment == "ST_SellLimit_" + tf_names[i])
+                            if(StringFind(comment, "ST_BuyLimit_" + tf_names[i]) >= 0 ||
+                               StringFind(comment, "ST_SellLimit_" + tf_names[i]) >= 0)
                             {
-                                // Additional verification: check if this position was opened recently (within last few minutes)
-                                datetime position_time = (datetime)PositionGetInteger(POSITION_TIME);
-                                if(TimeCurrent() - position_time < 300) // Position opened within last 5 minutes
-                                {
-                                    order_executed = true;
-                                    double position_price = PositionGetDouble(POSITION_PRICE_OPEN);
-                                    string position_type = (comment == "ST_BuyLimit_" + tf_names[i]) ? "BUY" : "SELL";
-                                    
-                                    break;
-                                }
-                                else
-                                {
-                                    
-                                }
+                                order_executed = true;
+                                break;
                             }
                         }
                     }
@@ -435,10 +353,7 @@ void CheckForExecutedOrders()
                 if(order_executed)
                 {
                     MarkTimeframeCompleted(i);
-                    
-                    // Determine order type from the original order
-                    string order_type_str = (tf_orders[i].order_type == ORDER_TYPE_BUY_LIMIT) ? "BUY" : "SELL";
-
+                    Print("Order executed for ", tf_names[i], " - Position opened | CSV updated");
                 }
                 
                 // Remove TP line since order no longer exists
@@ -454,7 +369,7 @@ void CheckForExecutedOrders()
                 if(!order_executed) // Only update CSV here if order wasn't executed (already updated in MarkTimeframeCompleted)
                 {
                     SaveCompletionStatusToCSV();
-                    
+                    Print("Order removed for ", tf_names[i], " (cancelled or expired) | CSV updated");
                 }
             }
         }
@@ -520,24 +435,16 @@ void MonitorPositionsForProfitTarget()
                 if(current_profit_target > 0.0 && profit >= current_profit_target)
                 {
                     ulong ticket = PositionGetTicket(i);
-                    string position_type_str = (position_type == POSITION_TYPE_BUY) ? "BUY" : "SELL";
-                    string tf_name = (tf_index >= 0) ? tf_names[tf_index] : "MANUAL";
-
+                    
                     // Close the position
                     if(trade.PositionClose(ticket))
                     {                        
-
                         // Remove TP line for this position
                         if(tf_index >= 0)
                         {
                             RemoveTPLine(tf_index);
                             ResetTimeframeStatus(tf_index);
-                            
                         }
-                    }
-                    else
-                    {
-                        
                     }
                 }
             }
@@ -573,7 +480,10 @@ void CheckMaxLossProtection()
     // Check if max loss threshold is breached
     if(total_profit <= -MaxOverallLoss && position_count > 0)
     {
-
+        Print("MAX LOSS HIT for ", _Symbol, "! Total loss: $", DoubleToString(MathAbs(total_profit), 2), 
+              " | Threshold: $", DoubleToString(MaxOverallLoss, 2));
+        Print("Closing all ", position_count, " positions and cancelling pending orders for ", _Symbol);
+        
         // Close all positions
         CloseAllPositions();
         
@@ -587,7 +497,8 @@ void CheckMaxLossProtection()
         
         // Reset completion status so new orders can be placed after recovery
         ResetCompletionStatus();
-
+        
+        Print("Current session loss recorded: $", DoubleToString(current_session_loss, 2));
     }
 }
 
@@ -619,7 +530,10 @@ void CheckMaxProfitProtection()
     // Check if max profit threshold is reached
     if(total_profit >= MaxOverallProfit && position_count > 0)
     {
-
+        Print("MAX PROFIT HIT for ", _Symbol, "! Total profit: $", DoubleToString(total_profit, 2), 
+              " | Threshold: $", DoubleToString(MaxOverallProfit, 2));
+        Print("Closing all ", position_count, " positions and cancelling pending orders for ", _Symbol);
+        
         // Close all positions
         CloseAllPositions();
         
@@ -633,7 +547,9 @@ void CheckMaxProfitProtection()
         
         // Reset completion status so new orders can be placed after recovery
         ResetCompletionStatus();
-
+        
+        Print("Max profit protection activated. Waiting for major trend change to resume trading...");
+        Print("Current session profit recorded: $", DoubleToString(current_session_profit, 2));
     }
 }
 
@@ -662,14 +578,18 @@ bool CanResumeAfterMaxProfit()
     if(trend_when_max_profit_hit == -1)
     {
         trend_when_max_profit_hit = current_30m_trend;
-        
+        Print("Recorded trend when max profit hit: ", (trend_when_max_profit_hit == 0 ? "BULLISH" : "BEARISH"));
         return false; // Don't resume immediately
     }
     
     // Check if trend has changed
     if(current_30m_trend != trend_when_max_profit_hit)
     {
-
+        Print("MAJOR TREND CHANGE DETECTED after max profit!");
+        Print("Previous trend: ", (trend_when_max_profit_hit == 0 ? "BULLISH" : "BEARISH"));
+        Print("New trend: ", (current_30m_trend == 0 ? "BULLISH" : "BEARISH"));
+        Print("Resuming trading operations...");
+        
         // Reset max profit protection
         max_profit_hit = false;
         max_profit_hit_time = 0;
@@ -706,14 +626,18 @@ bool CanResumeAfterMaxLoss()
     if(trend_when_max_loss_hit == -1)
     {
         trend_when_max_loss_hit = current_30m_trend;
-        
+        Print("Recorded trend when max loss hit: ", (trend_when_max_loss_hit == 0 ? "BULLISH" : "BEARISH"));
         return false; // Don't resume immediately
     }
     
     // Check if trend has changed
     if(current_30m_trend != trend_when_max_loss_hit)
     {
-
+        Print("MAJOR TREND CHANGE DETECTED after max loss!");
+        Print("Previous trend: ", (trend_when_max_loss_hit == 0 ? "BULLISH" : "BEARISH"));
+        Print("New trend: ", (current_30m_trend == 0 ? "BULLISH" : "BEARISH"));
+        Print("Resuming trading operations...");
+        
         // Reset max loss protection
         max_loss_hit = false;
         max_loss_hit_time = 0;
@@ -773,207 +697,215 @@ bool TrendChanged()
 //+------------------------------------------------------------------+
 void UpdateTrendState()
 {
-    // Trend state is maintained automatically through indicator calculations
-    // No additional actions needed when trend updates
+    if(is_30m_bullish)
+        Print("30M Trend: BULLISH - Looking for buy opportunities");
+    else if(is_30m_bearish)
+        Print("30M Trend: BEARISH - Looking for sell opportunities");
 }
 
 //+------------------------------------------------------------------+
-//| Manage order for a specific timeframe (called on candle close) |
-//+------------------------------------------------------------------+
-void ManageTimeframeOrder(int i)
-{
-    double trend_line[];
-    double trend_direction[];
-    ArraySetAsSeries(trend_line, true);
-    ArraySetAsSeries(trend_direction, true);
-    
-    if(CopyBuffer(tf_handles[i], 0, 0, 2, trend_line) < 2 ||
-       CopyBuffer(tf_handles[i], 2, 0, 2, trend_direction) < 2)
-        return;
-    
-    double current_line = trend_line[1];
-    double tf_trend = trend_direction[1];
-    
-    // Determine what type of order should be placed
-    bool should_have_buy_order = (is_30m_bullish && tf_trend == 0);  // 30M green AND timeframe green
-    bool should_have_sell_order = (is_30m_bearish && tf_trend == 1); // 30M red AND timeframe red
-    
-    // Current order status
-    bool has_pending_order = tf_orders[i].is_active && OrderExists(tf_orders[i].ticket);
-    
-    // If order was executed or cancelled, update tracking
-    if(tf_orders[i].is_active && !OrderExists(tf_orders[i].ticket))
-    {
-        tf_orders[i].is_active = false;
-        tf_orders[i].ticket = 0;
-        has_pending_order = false;
-    }
-    
-    if(should_have_buy_order)
-    {
-        double min_distance = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-        
-        // Place Buy Limit order ABOVE SuperTrend line with spread buffer
-        double order_price = current_line + (current_spread * OrderBufferMultiplier);
-        
-        // Ensure the order price meets broker minimum distance requirements
-        double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-        if(order_price <= ask - min_distance)
-        {
-            // Price is valid, continue
-        }
-        else
-        {
-            // Adjust price to meet minimum requirements
-            order_price = ask - min_distance - SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-        }
-        
-        if(!has_pending_order)
-        {
-            // Check if we need to cancel opposite type order first
-            if(tf_orders[i].is_active && tf_orders[i].order_type == ORDER_TYPE_SELL_LIMIT)
-            {
-                CancelOrder(i);
-            }
-            
-            // Only place new order if timeframe not completed and no existing orders
-            if(!IsTimeframeCompleted(i) && CountOrdersForTimeframe(i) == 0)
-            {
-                PlaceBuyLimitOrder(i, order_price, current_line);
-            }
-            else
-            {
-                
-            }
-        }
-        else
-        {
-            // Check if order type matches (buy order for buy condition)
-            if(tf_orders[i].order_type == ORDER_TYPE_BUY_LIMIT)
-            {
-                // Check if SuperTrend line price has changed from last recorded price
-                if(current_line != tf_orders[i].last_line_price)
-                {
-                    // SuperTrend line changed - update order price
-                    if(IsValidBuyLimitPrice(order_price))
-                    {
-                        // Only modify if the calculated price is actually different from current order price
-                        if(MathAbs(order_price - tf_orders[i].last_order_price) > _Point)
-                        {
-                            ModifyOrder(i, order_price);
-                            tf_orders[i].last_line_price = current_line;
-                            tf_orders[i].last_order_price = order_price;}
-                        else
-                        {
-                            // Price hasn't changed enough to warrant modification
-                            tf_orders[i].last_line_price = current_line; // Update line price tracking
-                        }
-                    }
-                    else
-                    {
-                        CancelOrder(i);
-                    }
-                }
-                // If line hasn't changed, keep existing order
-            }
-            else
-            {
-                // Wrong order type - cancel and place new one
-                CancelOrder(i);
-            }
-        }
-    }
-    else if(should_have_sell_order)
-    {
-        double min_distance = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-        
-        // Place Sell Limit order BELOW SuperTrend line with spread buffer
-        double order_price = current_line - (current_spread * OrderBufferMultiplier);
-        
-        // Ensure the order price meets broker minimum distance requirements
-        double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-        if(order_price >= bid + min_distance)
-        {
-            // Price is valid, continue
-        }
-        else
-        {
-            // Adjust price to meet minimum requirements
-            order_price = bid + min_distance + SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-        }
-        
-        if(!has_pending_order)
-        {
-            // Check if we need to cancel opposite type order first
-            if(tf_orders[i].is_active && tf_orders[i].order_type == ORDER_TYPE_BUY_LIMIT)
-            {
-                CancelOrder(i);
-            }
-            
-            // Only place new order if timeframe not completed and no existing orders
-            if(!IsTimeframeCompleted(i) && CountOrdersForTimeframe(i) == 0)
-            {
-                PlaceSellLimitOrder(i, order_price, current_line);
-            }
-            else
-            {
-                
-            }
-        }
-        else
-        {
-            // Check if order type matches (sell order for sell condition)
-            if(tf_orders[i].order_type == ORDER_TYPE_SELL_LIMIT)
-            {
-                // Check if SuperTrend line price has changed from last recorded price
-                if(current_line != tf_orders[i].last_line_price)
-                {
-                    // SuperTrend line changed - update order price
-                    if(IsValidSellLimitPrice(order_price))
-                    {
-                        // Only modify if the calculated price is actually different from current order price
-                        if(MathAbs(order_price - tf_orders[i].last_order_price) > _Point)
-                        {
-                            ModifyOrder(i, order_price);
-                            tf_orders[i].last_line_price = current_line;
-                            tf_orders[i].last_order_price = order_price;}
-                        else
-                        {
-                            // Price hasn't changed enough to warrant modification
-                            tf_orders[i].last_line_price = current_line; // Update line price tracking
-                        }
-                    }
-                    else
-                    {
-                        CancelOrder(i);
-                    }
-                }
-                // If line hasn't changed, keep existing order
-            }
-            else
-            {
-                // Wrong order type - cancel and place new one
-                CancelOrder(i);
-            }
-        }
-    }
-    else
-    {
-        // Should not have order - cancel if exists
-        if(has_pending_order)
-        {
-            CancelOrder(i);
-        }
-    }
-}
-
-//+------------------------------------------------------------------+
-//| Manage orders for all timeframes (legacy function - kept for compatibility) |
+//| Manage orders for all timeframes                               |
 //+------------------------------------------------------------------+
 void ManageTimeframeOrders()
 {
-    // This function is now replaced by CheckTimeframesForNewCandles()
-    // Orders are only updated when respective timeframe candles close
+    for(int i = 0; i < 6; i++)
+    {
+        double trend_line[];
+        double trend_direction[];
+        ArraySetAsSeries(trend_line, true);
+        ArraySetAsSeries(trend_direction, true);
+        
+        if(CopyBuffer(tf_handles[i], 0, 0, 2, trend_line) < 2 ||
+           CopyBuffer(tf_handles[i], 2, 0, 2, trend_direction) < 2)
+            continue;
+        
+        double current_line = trend_line[1];
+        double tf_trend = trend_direction[1];
+        
+        // Determine what type of order should be placed
+        bool should_have_buy_order = (is_30m_bullish && tf_trend == 0);  // 30M green AND timeframe green
+        bool should_have_sell_order = (is_30m_bearish && tf_trend == 1); // 30M red AND timeframe red
+        
+        // Current order status
+        bool has_pending_order = tf_orders[i].is_active && OrderExists(tf_orders[i].ticket);
+        
+        // Debug for M10 specifically
+        if(i == 4) // M10 is index 4
+        {
+            static datetime last_m10_debug = 0;
+            if(TimeCurrent() - last_m10_debug > 30) // Debug every 30 seconds
+            {
+                Print("M10 DEBUG - 30M Bullish: ", is_30m_bullish, " | 30M Bearish: ", is_30m_bearish);
+                Print("M10 DEBUG - TF Trend: ", tf_trend, " | Should Buy: ", should_have_buy_order, " | Should Sell: ", should_have_sell_order);  
+                Print("M10 DEBUG - Has Order: ", has_pending_order, " | Is Active: ", tf_orders[i].is_active, " | Ticket: ", tf_orders[i].ticket);
+                Print("M10 DEBUG - Completed: ", IsTimeframeCompleted(i), " | Order Count: ", CountOrdersForTimeframe(i));
+                last_m10_debug = TimeCurrent();
+            }
+        }
+        
+        // If order was executed or cancelled, update tracking
+        if(tf_orders[i].is_active && !OrderExists(tf_orders[i].ticket))
+        {
+            tf_orders[i].is_active = false;
+            tf_orders[i].ticket = 0;
+            has_pending_order = false;
+        }
+        
+        if(should_have_buy_order)
+        {
+            double min_distance = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+            
+            // Place Buy Limit order ABOVE SuperTrend line with spread buffer
+            // When price comes down to this level, it will buy
+            double order_price = current_line + (current_spread * OrderBufferMultiplier);
+            
+            // Ensure the order price meets broker minimum distance requirements
+            double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            if(order_price <= ask - min_distance)
+            {
+                // Price is valid, continue
+            }
+            else
+            {
+                // Adjust price to meet minimum requirements
+                order_price = ask - min_distance - SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+            }
+            
+            if(!has_pending_order)
+            {
+                // Check if we need to cancel opposite type order first
+                if(tf_orders[i].is_active && tf_orders[i].order_type == ORDER_TYPE_SELL_LIMIT)
+                {
+                    CancelOrder(i);
+                }
+                
+                // Only place new order if timeframe not completed and no existing orders
+                if(!IsTimeframeCompleted(i) && CountOrdersForTimeframe(i) == 0)
+                {
+                    PlaceBuyLimitOrder(i, order_price, current_line);
+                }
+            }
+            else
+            {
+                // Check if order type matches (buy order for buy condition)
+                if(tf_orders[i].order_type == ORDER_TYPE_BUY_LIMIT)
+                {
+                    // Check if SuperTrend line price has actually changed
+                    if(current_line != tf_orders[i].last_line_price)
+                    {
+                        // Also check if the calculated order price is different from the last order price
+                        double min_price_change = _Point * 200; // Minimum 200 points change required for buy orders (increased from 50)
+                        if(MathAbs(order_price - tf_orders[i].last_order_price) > min_price_change)
+                        {
+                            // Validate new price before modification
+                            if(IsValidBuyLimitPrice(order_price))
+                            {
+                                ModifyOrder(i, order_price);
+                                tf_orders[i].last_line_price = current_line;
+                                tf_orders[i].last_order_price = order_price;
+                            }
+                            else
+                            {
+                                CancelOrder(i);
+                            }
+                        }
+                        // If calculated price hasn't changed significantly, just update line price tracking
+                        else
+                        {
+                            tf_orders[i].last_line_price = current_line;
+                        }
+                    }
+                    // If line hasn't changed, no need to modify order
+                }
+                else
+                {
+                    // Wrong order type - cancel and place new one
+                    CancelOrder(i);
+                }
+            }
+        }
+        else if(should_have_sell_order)
+        {
+            double min_distance = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+            
+            // Place Sell Limit order BELOW SuperTrend line with spread buffer
+            // When price comes up to this level, it will sell
+            double order_price = current_line - (current_spread * OrderBufferMultiplier);
+            
+            // Ensure the order price meets broker minimum distance requirements
+            double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            if(order_price >= bid + min_distance)
+            {
+                // Price is valid, continue
+            }
+            else
+            {
+                // Adjust price to meet minimum requirements
+                order_price = bid + min_distance + SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+            }
+            
+            if(!has_pending_order)
+            {
+                // Check if we need to cancel opposite type order first
+                if(tf_orders[i].is_active && tf_orders[i].order_type == ORDER_TYPE_BUY_LIMIT)
+                {
+                    CancelOrder(i);
+                }
+                
+                // Only place new order if timeframe not completed and no existing orders
+                if(!IsTimeframeCompleted(i) && CountOrdersForTimeframe(i) == 0)
+                {
+                    PlaceSellLimitOrder(i, order_price, current_line);
+                }
+            }
+            else
+            {
+                // Check if order type matches (sell order for sell condition)
+                if(tf_orders[i].order_type == ORDER_TYPE_SELL_LIMIT)
+                {
+                    // Check if SuperTrend line price has actually changed
+                    if(current_line != tf_orders[i].last_line_price)
+                    {
+                        // Also check if the calculated order price is different from the last order price
+                        double min_price_change = _Point * 200; // Minimum 200 points change required for sell orders (increased from 50)
+                        if(MathAbs(order_price - tf_orders[i].last_order_price) > min_price_change)
+                        {
+                            // Validate new price before modification
+                            if(IsValidSellLimitPrice(order_price))
+                            {
+                                ModifyOrder(i, order_price);
+                                tf_orders[i].last_line_price = current_line;
+                                tf_orders[i].last_order_price = order_price;
+                            }
+                            else
+                            {
+                                CancelOrder(i);
+                            }
+                        }
+                        // If calculated price hasn't changed significantly, just update line price tracking
+                        else
+                        {
+                            tf_orders[i].last_line_price = current_line;
+                        }
+                    }
+                    // If line hasn't changed, no need to modify order
+                }
+                else
+                {
+                    // Wrong order type - cancel and place new one
+                    CancelOrder(i);
+                }
+            }
+        }
+        else
+        {
+            // Should not have order - cancel if exists
+            if(has_pending_order)
+            {
+                CancelOrder(i);
+            }
+        }
+    }
 }
 
 //+------------------------------------------------------------------+
@@ -981,57 +913,31 @@ void ManageTimeframeOrders()
 //+------------------------------------------------------------------+
 void PlaceBuyLimitOrder(int tf_index, double price, double line_value)
 {
-    // MULTIPLE LAYER PROTECTION AGAINST DUPLICATE ORDERS
-    
-    // Layer 1: Check our internal tracking
-    if(tf_orders[tf_index].is_active && tf_orders[tf_index].ticket > 0)
+    // Safety check: don't place order if one already exists for this timeframe
+    if(CountOrdersForTimeframe(tf_index) > 0)
     {
-        
+        Print("Cannot place buy order for ", tf_names[tf_index], " - order already exists");
         return;
     }
     
-    // Layer 2: Count actual broker orders 
-    int existing_orders = CountOrdersForTimeframe(tf_index);
-    if(existing_orders > 0)
-    {
-        
-        return;
-    }
-    
-    // Layer 3: Check if timeframe is completed
+    // Check if timeframe is completed
     if(IsTimeframeCompleted(tf_index))
     {
-        
+        Print("Cannot place buy order for ", tf_names[tf_index], " - timeframe already completed");
         return;
     }
-    
-    // Layer 4: Final real-time check just before placing order
-    SynchronizeOrderTracking();
-    if(tf_orders[tf_index].is_active)
-    {
-        
-        return;
-    }
-    
-    // Layer 5: Race condition protection
-    if(order_placement_in_progress[tf_index])
-    {
-        
-        return;
-    }
-    
-    // Set placement lock
-    order_placement_in_progress[tf_index] = true;
     
     // Validate price before placing order
     if(!IsValidBuyLimitPrice(price))
     {
-        
+        Print("Cannot place buy order for ", tf_names[tf_index], " - invalid price: ", DoubleToString(price, _Digits));
         return;
     }
     
     string comment = "ST_BuyLimit_" + tf_names[tf_index];
-
+    
+    Print("Attempting to place buy order for ", tf_names[tf_index], " at price: ", DoubleToString(price, _Digits));
+    
     if(trade.BuyLimit(LotSize, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, comment))
     {
         ulong new_ticket = trade.ResultOrder();
@@ -1046,15 +952,14 @@ void PlaceBuyLimitOrder(int tf_index, double price, double line_value)
         
         // Update CSV with new order information
         SaveCompletionStatusToCSV();
-
+        
+        Print("Buy Limit order placed for ", tf_names[tf_index], " - Ticket: ", new_ticket, 
+              " Price: ", DoubleToString(price, _Digits), " | CSV updated"); 
     }
     else
     {
-        
+        Print("Failed to place buy order for ", tf_names[tf_index], " - Error: ", GetLastError());
     }
-    
-    // Release placement lock
-    order_placement_in_progress[tf_index] = false;
 }
 
 //+------------------------------------------------------------------+
@@ -1062,41 +967,25 @@ void PlaceBuyLimitOrder(int tf_index, double price, double line_value)
 //+------------------------------------------------------------------+
 void PlaceSellLimitOrder(int tf_index, double price, double line_value)
 {
-    // MULTIPLE LAYER PROTECTION AGAINST DUPLICATE ORDERS
-    
-    // Layer 1: Check our internal tracking
-    if(tf_orders[tf_index].is_active && tf_orders[tf_index].ticket > 0)
-    {return;
+    // Safety check: don't place order if one already exists for this timeframe
+    if(CountOrdersForTimeframe(tf_index) > 0)
+    {
+        Print("Cannot place sell order for ", tf_names[tf_index], " - order already exists");
+        return;
     }
     
-    // Layer 2: Count actual broker orders 
-    int existing_orders = CountOrdersForTimeframe(tf_index);
-    if(existing_orders > 0)
-    {return;
-    }
-    
-    // Layer 3: Check if timeframe is completed
+    // Check if timeframe is completed
     if(IsTimeframeCompleted(tf_index))
-    {return;
+    {
+        Print("Cannot place sell order for ", tf_names[tf_index], " - timeframe already completed");
+        return;
     }
-    
-    // Layer 4: Final real-time check just before placing order
-    SynchronizeOrderTracking();
-    if(tf_orders[tf_index].is_active)
-    {return;
-    }
-    
-    // Layer 5: Race condition protection
-    if(order_placement_in_progress[tf_index])
-    {return;
-    }
-    
-    // Set placement lock
-    order_placement_in_progress[tf_index] = true;
     
     // Validate price before placing order
     if(!IsValidSellLimitPrice(price))
-    {return;
+    {
+        Print("Cannot place sell order for ", tf_names[tf_index], " - invalid price: ", DoubleToString(price, _Digits));
+        return;
     }
     
     string comment = "ST_SellLimit_" + tf_names[tf_index];
@@ -1114,12 +1003,14 @@ void PlaceSellLimitOrder(int tf_index, double price, double line_value)
         
         // Update CSV with new order information
         SaveCompletionStatusToCSV();
+        
+        Print("Sell Limit order placed for ", tf_names[tf_index], " - Ticket: ", tf_orders[tf_index].ticket, 
+              " Price: ", DoubleToString(price, _Digits), " | CSV updated");
     }
     else
-    {}
-    
-    // Release placement lock
-    order_placement_in_progress[tf_index] = false;
+    {
+        Print("Failed to place sell order for ", tf_names[tf_index], " - Error: ", GetLastError());
+    }
 }
 
 //+------------------------------------------------------------------+
@@ -1206,10 +1097,14 @@ bool CancelOrder(int tf_index)
         
         // Update CSV to reflect cancelled order
         SaveCompletionStatusToCSV();
+        
+        Print("Order cancelled for ", tf_names[tf_index], " - Ticket: ", ticket_to_cancel, " | CSV updated");
         return true;
     }
     else
-    {return false;
+    {
+        Print("Failed to cancel order for ", tf_names[tf_index], " - Ticket: ", ticket_to_cancel, " Error: ", GetLastError());
+        return false;
     }
 }
 
@@ -1249,11 +1144,13 @@ void CancelAllPendingOrders()
             if(trade.OrderDelete(ticket))
             {
                 cancelled_count++;
+                Print("Additional pending order cancelled: ", ticket);
             }
         }
     }
     
-    // Orders cancelled successfully - no additional action needed
+    if(cancelled_count > 0)
+        Print("Total pending orders cancelled: ", cancelled_count);
 }
 
 //+------------------------------------------------------------------+
@@ -1386,7 +1283,9 @@ void SynchronizeOrderTracking()
         if(tf_orders[i].is_active && tf_orders[i].ticket > 0)
         {
             if(!OrderExists(tf_orders[i].ticket))
-            {tf_orders[i].is_active = false;
+            {
+                Print("Clearing non-existent order tracking for ", tf_names[i], " - Ticket: ", tf_orders[i].ticket);
+                tf_orders[i].is_active = false;
                 tf_orders[i].ticket = 0;
                 tf_orders[i].last_order_price = 0;
                 tf_orders[i].last_line_price = 0;
@@ -1414,7 +1313,9 @@ void SynchronizeOrderTracking()
                 {
                     // If we're not tracking this order, start tracking it
                     if(tf_orders[tf_idx].ticket != ticket)
-                    {tf_orders[tf_idx].ticket = ticket;
+                    {
+                        Print("Found untracked order for ", tf_names[tf_idx], " - Ticket: ", ticket, " - Adding to tracking");
+                        tf_orders[tf_idx].ticket = ticket;
                         tf_orders[tf_idx].is_active = true;
                         tf_orders[tf_idx].last_order_price = OrderGetDouble(ORDER_PRICE_OPEN);
                         tf_orders[tf_idx].order_type = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
@@ -1430,7 +1331,10 @@ void SynchronizeOrderTracking()
 //| Synchronize existing orders with CSV                           |
 //+------------------------------------------------------------------+
 void SynchronizeOrdersWithCSV()
-{int existing_orders = 0;
+{
+    Print("Synchronizing existing orders with CSV...");
+    
+    int existing_orders = 0;
     for(int i = 0; i < 6; i++)
     {
         if(tf_orders[i].is_active && tf_orders[i].ticket > 0)
@@ -1440,10 +1344,14 @@ void SynchronizeOrdersWithCSV()
     }
     
     if(existing_orders > 0)
-    {SaveCompletionStatusToCSV();
+    {
+        Print("Found ", existing_orders, " existing orders - updating CSV to match broker state");
+        SaveCompletionStatusToCSV();
     }
     else
-    {}
+    {
+        Print("No existing orders found - CSV will be updated as new orders are placed");
+    }
 }
 
 //+------------------------------------------------------------------+
@@ -1557,6 +1465,9 @@ void LoadCompletionStatusFromCSV()
                     current_session_loss = StringToDouble(parts[2]);
                 if(count >= 4 && parts[3] != "1970.01.01 00:00:00")
                     max_loss_hit_time = StringToTime(parts[3]);
+                
+                Print("Loaded max loss status: ", (max_loss_hit ? "ACTIVE" : "INACTIVE"),
+                      " | Session loss: $", DoubleToString(current_session_loss, 2));
             }
         }
         else
@@ -1579,6 +1490,9 @@ void LoadCompletionStatusFromCSV()
                     current_session_profit = StringToDouble(parts[2]);
                 if(count >= 4 && parts[3] != "1970.01.01 00:00:00")
                     max_profit_hit_time = StringToTime(parts[3]);
+                
+                Print("Loaded max profit status: ", (max_profit_hit ? "ACTIVE" : "INACTIVE"),
+                      " | Session profit: $", DoubleToString(current_session_profit, 2));
             }
         }
         
@@ -1620,18 +1534,29 @@ void LoadCompletionStatusFromCSV()
                                 tf_orders[i].order_type = ORDER_TYPE_BUY_LIMIT;
                             else if(order_type_str == "SELL_LIMIT")
                                 tf_orders[i].order_type = ORDER_TYPE_SELL_LIMIT;
+                            
+                            Print("Restored existing order for ", tf_names[i], ": Ticket ", order_ticket, 
+                                  " Type: ", order_type_str, " Price: ", DoubleToString(order_price, _Digits));
                         }
                         else if(has_order && order_ticket > 0)
                         {
-                            // Order was in CSV but doesn't exist anymore - clean up tracking
+                            // Order was in CSV but doesn't exist anymore - clean up
+                            Print("Order in CSV for ", tf_names[i], " no longer exists (Ticket: ", order_ticket, ") - cleaning up");
                         }
                     }
+                    
+                    Print("Loaded status for ", tf_names[i], ": ", 
+                          (timeframe_completed[i] ? "COMPLETED" : "PENDING"),
+                          (profit_targets_loaded ? " with profit target: $" + DoubleToString(tf_profit_targets[i], 2) : ""));
                 }
             }
         }
         FileClose(handle);
         
-        // Profit targets loaded successfully from CSV
+        if(profit_targets_loaded)
+            Print("Loaded completion status and profit targets from: ", csv_filename);
+        else
+            Print("Loaded completion status from: ", csv_filename, " (without profit targets)");
     }
     else
     {
@@ -1678,7 +1603,6 @@ void ResetCompletionStatus()
 {
     for(int i = 0; i < 6; i++)
     {
-        // Reset completion status for all timeframes
         timeframe_completed[i] = false;
     }
     SaveCompletionStatusToCSV();
@@ -1694,159 +1618,6 @@ void ResetTimeframeStatus(int tf_index)
         timeframe_completed[tf_index] = false;
         SaveCompletionStatusToCSV();
     }
-}
-
-//+------------------------------------------------------------------+
-//| Reset incorrect completions (check if positions exist for completed timeframes) |
-//+------------------------------------------------------------------+
-void ValidateCompletionStatus()
-{
-    for(int i = 0; i < 6; i++)
-    {
-        if(timeframe_completed[i]) // If marked as completed
-        {
-            // Check if there's actually a position for this timeframe
-            bool has_position = false;
-            for(int p = 0; p < PositionsTotal(); p++)
-            {
-                if(PositionGetTicket(p) > 0)
-                {
-                    if(PositionGetInteger(POSITION_MAGIC) == Magic &&
-                       PositionGetString(POSITION_SYMBOL) == _Symbol)
-                    {
-                        string comment = PositionGetString(POSITION_COMMENT);
-                        if(comment == "ST_BuyLimit_" + tf_names[i] || comment == "ST_SellLimit_" + tf_names[i])
-                        {
-                            has_position = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            
-            if(!has_position)
-            {ResetTimeframeStatus(i);
-            }
-        }
-    }
-}
-
-//+------------------------------------------------------------------+
-//| Align pending orders with current 30M trend direction          |
-//+------------------------------------------------------------------+
-void AlignOrdersWithTrend()
-{
-    string current_trend = is_30m_bullish ? "Bullish" : (is_30m_bearish ? "Bearish" : "Unknown");
-    string debug_msg = StringFormat("🔄 Aligning orders with current 30M trend: %s", current_trend);
-    
-    int aligned_count = 0;
-    int removed_count = 0;
-    
-    for(int i = 0; i < ArraySize(tf_names); i++)
-    {
-        string tf = tf_names[i];
-        
-        // Skip if already completed or in progress
-        if(timeframe_completed[i] || order_placement_in_progress[i])
-            continue;
-            
-        // Check for existing pending orders using the same format as other functions
-        string buy_comment = "ST_BuyLimit_" + tf_names[i];
-        string sell_comment = "ST_SellLimit_" + tf_names[i];
-        
-        bool has_buy_order = false;
-        bool has_sell_order = false;
-        
-        // Scan for existing orders using MQL5 functions
-        for(int j = 0; j < OrdersTotal(); j++)
-        {
-            if(OrderGetTicket(j) > 0)
-            {
-                if(OrderGetString(ORDER_SYMBOL) == _Symbol &&
-                   OrderGetInteger(ORDER_MAGIC) == Magic)
-                {
-                    string order_comment = OrderGetString(ORDER_COMMENT);
-                    if(order_comment == buy_comment)
-                        has_buy_order = true;
-                    if(order_comment == sell_comment)
-                        has_sell_order = true;
-                }
-            }
-        }
-        
-        // Remove orders that don't align with current trend
-        if(current_trend == "Bullish" && has_sell_order)
-        {
-            RemoveOrderByComment(sell_comment);
-            removed_count++;
-        }
-        else if(current_trend == "Bearish" && has_buy_order)
-        {
-            RemoveOrderByComment(buy_comment);
-            removed_count++;
-        }
-        
-        // Place order in trend direction if none exists
-        if(current_trend == "Bullish" && !has_buy_order)
-        {
-            PlaceOrderForTimeframe(tf_names[i], "BUY");
-            aligned_count++;
-        }
-        else if(current_trend == "Bearish" && !has_sell_order)
-        {
-            PlaceOrderForTimeframe(tf_names[i], "SELL");
-            aligned_count++;
-        }
-    }
-}
-
-//+------------------------------------------------------------------+
-//| Remove order by comment string                                  |
-//+------------------------------------------------------------------+
-void RemoveOrderByComment(string comment)
-{
-    for(int i = 0; i < OrdersTotal(); i++)
-    {
-        if(OrderGetTicket(i) > 0)
-        {
-            if(OrderGetString(ORDER_SYMBOL) == _Symbol && 
-               OrderGetInteger(ORDER_MAGIC) == Magic &&
-               OrderGetString(ORDER_COMMENT) == comment)
-            {
-                if(!trade.OrderDelete(OrderGetTicket(i)))
-                {}
-                break;
-            }
-        }
-    }
-}
-
-//+------------------------------------------------------------------+
-//| Place order for specific timeframe in trend direction           |
-//+------------------------------------------------------------------+
-void PlaceOrderForTimeframe(string tf_name, string direction)
-{
-    // Find timeframe index
-    int tf_index = -1;
-    for(int i = 0; i < ArraySize(tf_names); i++)
-    {
-        if(tf_names[i] == tf_name)
-        {
-            tf_index = i;
-            break;
-        }
-    }
-    
-    if(tf_index == -1) return;
-    
-    // Set lock to prevent race conditions
-    order_placement_in_progress[tf_index] = true;
-    
-    // Place the order using existing logic
-    ManageTimeframeOrder(tf_index);
-    
-    // Release lock
-    order_placement_in_progress[tf_index] = false;
 }
 
 //+------------------------------------------------------------------+
