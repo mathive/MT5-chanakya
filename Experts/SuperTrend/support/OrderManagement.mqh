@@ -8,11 +8,11 @@ CTrade m_trade;
 //+------------------------------------------------------------------+
 
 // Place a pending BUY STOP order using CTrade object
-bool PlaceBuyStop(double lotSize, double price, string comment = "", double stopLoss = 0, double takeProfit = 0)
+bool PlaceBuyStop(double lot_Size, double price, string comment = "", double stopLoss = 0, double takeProfit = 0)
 {
    // stopLoss/takeProfit = 0 means no SL/TP
    datetime expiration = 0;
-   bool result = m_trade.BuyLimit(lotSize, price, _Symbol, stopLoss, takeProfit, ORDER_TIME_GTC, expiration, comment);
+   bool result = m_trade.BuyLimit(lot_Size, price, _Symbol, stopLoss, takeProfit, ORDER_TIME_GTC, expiration, comment);
    if(!result)
    {
       Print("BUY STOP order failed: ", m_trade.ResultRetcode());
@@ -22,11 +22,11 @@ bool PlaceBuyStop(double lotSize, double price, string comment = "", double stop
 }
 
 // Place a pending SELL STOP order using CTrade object
-bool PlaceSellStop(double lotSize, double price, string comment = "", double stopLoss = 0, double takeProfit = 0)
+bool PlaceSellStop(double lot_Size, double price, string comment = "", double stopLoss = 0, double takeProfit = 0)
 {
    // stopLoss/takeProfit = 0 means no SL/TP
    datetime expiration = 0;
-   bool result = m_trade.SellLimit(lotSize, price, _Symbol, stopLoss, takeProfit, ORDER_TIME_GTC, expiration, comment);
+   bool result = m_trade.SellLimit(lot_Size, price, _Symbol, stopLoss, takeProfit, ORDER_TIME_GTC, expiration, comment);
    if(!result)
    {
       Print("SELL STOP order failed: ", m_trade.ResultRetcode());
