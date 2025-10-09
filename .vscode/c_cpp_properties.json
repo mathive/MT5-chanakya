@@ -1,0 +1,38 @@
+{
+    "configurations": [
+        {
+            "name": "MQL5",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "${workspaceFolder}/Include/**",
+                "${workspaceFolder}/Experts/**",
+                "${workspaceFolder}/Indicators/**",
+                "${workspaceFolder}/Libraries/**",
+                "${workspaceFolder}/Scripts/**"
+            ],
+            "defines": [
+                "_UNICODE",
+                "UNICODE",
+                "__MQL5__"
+            ],
+            "windowsSdkVersion": "10.0.22000.0",
+            "compilerPath": "",
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "windows-msvc-x64",
+            "browse": {
+                "path": [
+                    "${workspaceFolder}",
+                    "${workspaceFolder}/Include",
+                    "${workspaceFolder}/Experts",
+                    "${workspaceFolder}/Indicators",
+                    "${workspaceFolder}/Libraries",
+                    "${workspaceFolder}/Scripts"
+                ],
+                "limitSymbolsToIncludedHeaders": true,
+                "databaseFilename": ""
+            }
+        }
+    ],
+    "version": 4
+}

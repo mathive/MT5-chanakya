@@ -81,6 +81,7 @@ struct TimeframeOrder
     double last_line_price;
     double last_order_price;
     ENUM_ORDER_TYPE order_type;
+    datetime last_cancel_time; // Track when order was last cancelled
 };
 
 TimeframeOrder tf_orders[6];
@@ -155,6 +156,7 @@ int OnInit()
         tf_orders[i].last_line_price = 0;
         tf_orders[i].last_order_price = 0;
         tf_orders[i].order_type = ORDER_TYPE_BUY;
+        tf_orders[i].last_cancel_time = 0;
     }
     
     // Load completion status and profit targets from CSV
@@ -708,6 +710,9 @@ void UpdateTrendState()
 //+------------------------------------------------------------------+
 void ManageTimeframeOrders()
 {
+    Print("=== MANAGING ORDERS ===");
+    Print("30M Bullish: ", is_30m_bullish, " | 30M Bearish: ", is_30m_bearish);
+    
     for(int i = 0; i < 6; i++)
     {
         double trend_line[];
@@ -729,17 +734,21 @@ void ManageTimeframeOrders()
         // Current order status
         bool has_pending_order = tf_orders[i].is_active && OrderExists(tf_orders[i].ticket);
         
-        // Debug for M10 specifically
-        if(i == 4) // M10 is index 4
+        Print("TF[", tf_names[i], "] Line:", DoubleToString(current_line, _Digits), 
+              " TFTrend:", tf_trend, " ShouldBuy:", should_have_buy_order, 
+              " ShouldSell:", should_have_sell_order, " HasOrder:", has_pending_order);
+        
+        // Debug for specific timeframes that are experiencing issues
+        if(i <= 5) // Debug for all timeframes when needed
         {
-            static datetime last_m10_debug = 0;
-            if(TimeCurrent() - last_m10_debug > 30) // Debug every 30 seconds
+            static datetime last_debug_time[6] = {0, 0, 0, 0, 0, 0};
+            if(TimeCurrent() - last_debug_time[i] > 60) // Debug every 60 seconds
             {
-                Print("M10 DEBUG - 30M Bullish: ", is_30m_bullish, " | 30M Bearish: ", is_30m_bearish);
-                Print("M10 DEBUG - TF Trend: ", tf_trend, " | Should Buy: ", should_have_buy_order, " | Should Sell: ", should_have_sell_order);  
-                Print("M10 DEBUG - Has Order: ", has_pending_order, " | Is Active: ", tf_orders[i].is_active, " | Ticket: ", tf_orders[i].ticket);
-                Print("M10 DEBUG - Completed: ", IsTimeframeCompleted(i), " | Order Count: ", CountOrdersForTimeframe(i));
-                last_m10_debug = TimeCurrent();
+                Print("TF_DEBUG[", tf_names[i], "] - 30M Bullish:", is_30m_bullish, " Bearish:", is_30m_bearish);
+                Print("TF_DEBUG[", tf_names[i], "] - TF Trend:", tf_trend, " Should Buy:", should_have_buy_order, " Should Sell:", should_have_sell_order);
+                Print("TF_DEBUG[", tf_names[i], "] - Has Order:", has_pending_order, " Active:", tf_orders[i].is_active, " Ticket:", tf_orders[i].ticket);
+                Print("TF_DEBUG[", tf_names[i], "] - Order Type:", (tf_orders[i].order_type == ORDER_TYPE_BUY_LIMIT ? "BUY" : "SELL"), " Last Price:", tf_orders[i].last_order_price);
+                last_debug_time[i] = TimeCurrent();
             }
         }
         
@@ -773,50 +782,55 @@ void ManageTimeframeOrders()
                 order_price = ask - min_distance - SymbolInfoDouble(_Symbol, SYMBOL_POINT);
             }
             
+            // IMPROVED LOGIC: Check what we currently have
             if(!has_pending_order)
             {
-                // Check if we need to cancel opposite type order first
-                if(tf_orders[i].is_active && tf_orders[i].order_type == ORDER_TYPE_SELL_LIMIT)
-                {
-                    CancelOrder(i);
-                }
-                
-                // Only place new order if timeframe not completed and no existing orders
+                // No order exists - place new buy order
                 if(!IsTimeframeCompleted(i) && CountOrdersForTimeframe(i) == 0)
                 {
+                    // Additional safety check - don't place order if we just cancelled one at similar price
+                    double last_cancelled_price = tf_orders[i].last_order_price; // This will be 0 after cancel
+                    Print("PLACING NEW ", tf_names[i], " BUY order at ", DoubleToString(order_price, _Digits));
                     PlaceBuyLimitOrder(i, order_price, current_line);
                 }
             }
-            else
+            else if(tf_orders[i].order_type == ORDER_TYPE_BUY_LIMIT)
             {
-                // Check if order type matches (buy order for buy condition)
-                if(tf_orders[i].order_type == ORDER_TYPE_BUY_LIMIT)
+                // We have a BUY order - check if price needs updating
+                double price_difference = MathAbs(order_price - tf_orders[i].last_order_price);
+                double min_change_threshold = current_spread * 2.0; // Require 2x current spread minimum change (dynamic for all assets)
+                
+                if(price_difference > min_change_threshold)
                 {
-                    // Simple logic: Check if the new calculated price is different from current order price
-                    if(MathAbs(order_price - tf_orders[i].last_order_price) > _Point)
+                    if(IsValidBuyLimitPrice(order_price))
                     {
-                        // Validate new price before modification
-                        if(IsValidBuyLimitPrice(order_price))
-                        {
-                            Print("Updating ", tf_names[i], " buy order: ", DoubleToString(tf_orders[i].last_order_price, _Digits), 
-                                  " -> ", DoubleToString(order_price, _Digits));
-                            ModifyOrder(i, order_price);
-                            tf_orders[i].last_line_price = current_line;
-                            tf_orders[i].last_order_price = order_price;
-                        }
-                        else
-                        {
-                            Print("New price invalid for ", tf_names[i], " - Cancelling order");
-                            CancelOrder(i);
-                        }
+                        Print("Updating ", tf_names[i], " buy order: ", DoubleToString(tf_orders[i].last_order_price, _Digits), 
+                              " -> ", DoubleToString(order_price, _Digits), " (Diff: ", DoubleToString(price_difference, _Digits), 
+                              " > Threshold: ", DoubleToString(min_change_threshold, _Digits), ")");
+                        ModifyOrder(i, order_price);
+                        tf_orders[i].last_line_price = current_line;
+                        tf_orders[i].last_order_price = order_price;
                     }
-                    // If price hasn't changed, do nothing
+                    else
+                    {
+                        Print("New buy price invalid for ", tf_names[i], " (", DoubleToString(order_price, _Digits), ") - Cancelling order");
+                        CancelOrder(i);
+                    }
                 }
                 else
                 {
-                    // Wrong order type - cancel and place new one
-                    CancelOrder(i);
+                    // Price difference too small, no update needed
+                    Print("BUY order ", tf_names[i], " price change too small (diff: ", DoubleToString(price_difference, _Digits), 
+                          " < threshold: ", DoubleToString(min_change_threshold, _Digits), " [2x spread]) - no action");
                 }
+            }
+            else if(tf_orders[i].order_type == ORDER_TYPE_SELL_LIMIT)
+            {
+                // Wrong order type - cancel sell, will place buy on next cycle
+                Print("DEBUG BUY: Cancelling ", tf_names[i], " SELL order to place BUY order | Current price: ", 
+                      DoubleToString(tf_orders[i].last_order_price, _Digits), " | New price: ", 
+                      DoubleToString(order_price, _Digits), " | Ticket: ", tf_orders[i].ticket);
+                CancelOrder(i);
             }
         }
         else if(should_have_sell_order)
@@ -841,50 +855,55 @@ void ManageTimeframeOrders()
                 order_price = bid + min_distance + SymbolInfoDouble(_Symbol, SYMBOL_POINT);
             }
             
+            // IMPROVED LOGIC: Check what we currently have
             if(!has_pending_order)
             {
-                // Check if we need to cancel opposite type order first
-                if(tf_orders[i].is_active && tf_orders[i].order_type == ORDER_TYPE_BUY_LIMIT)
-                {
-                    CancelOrder(i);
-                }
-                
-                // Only place new order if timeframe not completed and no existing orders
+                // No order exists - place new sell order
                 if(!IsTimeframeCompleted(i) && CountOrdersForTimeframe(i) == 0)
                 {
+                    // Additional safety check - don't place order if we just cancelled one at similar price
+                    double last_cancelled_price = tf_orders[i].last_order_price; // This will be 0 after cancel
+                    Print("PLACING NEW ", tf_names[i], " SELL order at ", DoubleToString(order_price, _Digits));
                     PlaceSellLimitOrder(i, order_price, current_line);
                 }
             }
-            else
+            else if(tf_orders[i].order_type == ORDER_TYPE_SELL_LIMIT)
             {
-                // Check if order type matches (sell order for sell condition)
-                if(tf_orders[i].order_type == ORDER_TYPE_SELL_LIMIT)
+                // We have a SELL order - check if price needs updating
+                double price_difference = MathAbs(order_price - tf_orders[i].last_order_price);
+                double min_change_threshold = current_spread * 2.0; // Require 2x current spread minimum change (dynamic for all assets)
+                
+                if(price_difference > min_change_threshold)
                 {
-                    // Simple logic: Check if the new calculated price is different from current order price
-                    if(MathAbs(order_price - tf_orders[i].last_order_price) > _Point)
+                    if(IsValidSellLimitPrice(order_price))
                     {
-                        // Validate new price before modification
-                        if(IsValidSellLimitPrice(order_price))
-                        {
-                            Print("Updating ", tf_names[i], " sell order: ", DoubleToString(tf_orders[i].last_order_price, _Digits), 
-                                  " -> ", DoubleToString(order_price, _Digits));
-                            ModifyOrder(i, order_price);
-                            tf_orders[i].last_line_price = current_line;
-                            tf_orders[i].last_order_price = order_price;
-                        }
-                        else
-                        {
-                            Print("New price invalid for ", tf_names[i], " - Cancelling order");
-                            CancelOrder(i);
-                        }
+                        Print("Updating ", tf_names[i], " sell order: ", DoubleToString(tf_orders[i].last_order_price, _Digits), 
+                              " -> ", DoubleToString(order_price, _Digits), " (Diff: ", DoubleToString(price_difference, _Digits), 
+                              " > Threshold: ", DoubleToString(min_change_threshold, _Digits), ")");
+                        ModifyOrder(i, order_price);
+                        tf_orders[i].last_line_price = current_line;
+                        tf_orders[i].last_order_price = order_price;
                     }
-                    // If price hasn't changed, do nothing
+                    else
+                    {
+                        Print("New sell price invalid for ", tf_names[i], " (", DoubleToString(order_price, _Digits), ") - Cancelling order");
+                        CancelOrder(i);
+                    }
                 }
                 else
                 {
-                    // Wrong order type - cancel and place new one
-                    CancelOrder(i);
+                    // Price difference too small, no update needed
+                    Print("SELL order ", tf_names[i], " price change too small (diff: ", DoubleToString(price_difference, _Digits), 
+                          " < threshold: ", DoubleToString(min_change_threshold, _Digits), " [2x spread]) - no action");
                 }
+            }
+            else if(tf_orders[i].order_type == ORDER_TYPE_BUY_LIMIT)
+            {
+                // Wrong order type - cancel buy, will place sell on next cycle
+                Print("DEBUG SELL: Cancelling ", tf_names[i], " BUY order to place SELL order | Current price: ", 
+                      DoubleToString(tf_orders[i].last_order_price, _Digits), " | New price: ", 
+                      DoubleToString(order_price, _Digits), " | Ticket: ", tf_orders[i].ticket);
+                CancelOrder(i);
             }
         }
         else
@@ -892,6 +911,8 @@ void ManageTimeframeOrders()
             // Should not have order - cancel if exists
             if(has_pending_order)
             {
+                Print("DEBUG CANCEL: Cancelling ", tf_names[i], " - Should not have order. 30M Bullish: ", is_30m_bullish, 
+                      " | 30M Bearish: ", is_30m_bearish, " | TF Trend: ", tf_trend, " | Ticket: ", tf_orders[i].ticket);
                 CancelOrder(i);
             }
         }
@@ -1079,12 +1100,25 @@ bool IsValidSellStopPrice(double price)
 bool CancelOrder(int tf_index)
 {
     ulong ticket_to_cancel = tf_orders[tf_index].ticket;
+    double cancel_price = tf_orders[tf_index].last_order_price;
+    
+    // Check cooldown period - prevent rapid cancellations
+    datetime current_time = TimeCurrent();
+    const int CANCEL_COOLDOWN = 120; // Minimum 2 minutes between cancellations for same timeframe
+    
+    if(tf_orders[tf_index].last_cancel_time > 0 && current_time - tf_orders[tf_index].last_cancel_time < CANCEL_COOLDOWN)
+    {
+        Print("CANCEL BLOCKED: ", tf_names[tf_index], " - Cooldown active (", (CANCEL_COOLDOWN - (current_time - tf_orders[tf_index].last_cancel_time)), " seconds remaining)");
+        return false;
+    }
+    
     if(trade.OrderDelete(tf_orders[tf_index].ticket))
     {
         tf_orders[tf_index].is_active = false;
         tf_orders[tf_index].ticket = 0;
         tf_orders[tf_index].last_order_price = 0;
         tf_orders[tf_index].last_line_price = 0;
+        tf_orders[tf_index].last_cancel_time = current_time; // Record cancellation time
         
         // Remove TP line from chart
         RemoveTPLine(tf_index);

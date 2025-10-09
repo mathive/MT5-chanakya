@@ -1,0 +1,14 @@
+{
+    "files.associations": {
+        "*.mq5": "cpp",
+        "*.mq4": "cpp",
+        "*.mqh": "cpp"
+    },
+    "C_Cpp.errorSquiggles": "disabled",
+    "C_Cpp.intelliSenseEngine": "default",
+    "C_Cpp.configurationWarnings": "disabled",
+    "editor.bracketPairColorization.enabled": true,
+    "editor.guides.bracketPairs": true,
+    "files.encoding": "utf8",
+    "files.eol": "\r\n"
+}

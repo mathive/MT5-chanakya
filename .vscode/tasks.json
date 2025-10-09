@@ -1,0 +1,87 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Compile MQL5",
+            "type": "shell",
+            "command": "Start-Process",
+            "args": [
+                "-FilePath",
+                "'C:\\Program Files\\MetaTrader 5\\MetaEditor64.exe'",
+                "-ArgumentList",
+                "'/compile:${file}', '/log'",
+                "-Wait",
+                "-NoNewWindow"
+            ],
+            "options": {
+                "shell": {
+                    "executable": "powershell.exe",
+                    "args": ["-Command"]
+                }
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "problemMatcher": {
+                "owner": "mql5",
+                "fileLocation": ["relative", "${workspaceFolder}"],
+                "pattern": {
+                    "regexp": "^(.*)\\((\\d+),(\\d+)\\)\\s*:\\s*(warning|error)\\s*(.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "severity": 4,
+                    "message": 5
+                }
+            }
+        },
+        {
+            "label": "Compile MQL5 (CMD)",
+            "type": "shell",
+            "command": "\"C:\\Program Files\\MetaTrader 5\\MetaEditor64.exe\"",
+            "args": [
+                "/compile:${file}",
+                "/log"
+            ],
+            "options": {
+                "shell": {
+                    "executable": "cmd.exe",
+                    "args": ["/c"]
+                }
+            },
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            }
+        },
+        {
+            "label": "Compile MQL5 (Batch)",
+            "type": "shell",
+            "command": "${workspaceFolder}\\compile_mql5.bat",
+            "args": ["${file}"],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            }
+        }
+    ]
+}
