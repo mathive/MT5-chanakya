@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
-#property version   "1.01"
+#property version   "1.02"
 
 //--- Include custom header file
 #include "support\GetSpread.mqh"
@@ -214,13 +214,13 @@ double current_spread = 0.0;
 static datetime last_candle_time = 0;
 static ENUM_ST_SIGNAL last_signal = ST_SIGNAL_NONE;
 static double last_stLinePrice = 0;
-input bool takePositionsAtStart = false;
-input double takeProfitForPosition = 30.0;  // Take profit in account currency
-input double stopLossForPosition = 10.0;    // Stop loss in account currency
-input bool trackMajorTrend = false;
-input ENUM_TIMEFRAMES tradeWithMajorTrend = PERIOD_H1;
+input bool takePositionsAtStart = true;
+input double takeProfitForPosition = 220.0;  // Take profit in account currency
+input double stopLossForPosition = 50.0;    // Stop loss in account currency
+input bool trackMajorTrend = true;
+input ENUM_TIMEFRAMES tradeWithMajorTrend = PERIOD_M15;
 input double lotSize = 0.01;
-input bool checkOverAllPositionsForProfit = false;
+input bool checkOverAllPositionsForProfit = true;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
