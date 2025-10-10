@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
-#property version   "1.02"
+#property version   "1.03"
 
 //--- Include custom header file
 #include "support\GetSpread.mqh"
@@ -51,6 +51,25 @@ bool InitSuperTrend()
    }
    
    Print("SuperTrend indicator initialized successfully");
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Initialize SuperTrend indicator handle for execution timeframe  |
+//+------------------------------------------------------------------+
+bool InitExecutionTimeframeSuperTrend()
+{
+   ExecutionTimeframe_Handle = iCustom(_Symbol, tradeExecutionTimeframe, "Supertrend", 
+                                       IndicatorName, ATRMultiplier, ATRPeriod, ATRMaxBars, IndicatorShift, 
+                                       EnableNotify, SendAlert, SendApp, SendEmail, TriggerCandle);
+   
+   if (ExecutionTimeframe_Handle == INVALID_HANDLE)
+   {
+      Print("Failed to create execution timeframe SuperTrend indicator handle. Error: ", GetLastError());
+      return false;
+   }
+   
+   Print("Execution timeframe SuperTrend indicator initialized successfully for ", EnumToString(tradeExecutionTimeframe));
    return true;
 }
 
@@ -129,6 +148,58 @@ ENUM_ST_SIGNAL GetSuperTrendSignalSilent()
       return ST_SIGNAL_BUY;
    
    return ST_SIGNAL_NONE;
+}
+
+//+------------------------------------------------------------------+
+//| Function to get SuperTrend signal from execution timeframe     |
+//+------------------------------------------------------------------+
+ENUM_ST_SIGNAL GetExecutionTimeframeSignal()
+{
+   if (ExecutionTimeframe_Handle == INVALID_HANDLE)
+   {
+      Print("Execution timeframe SuperTrend handle is invalid, attempting to initialize...");
+      if (!InitExecutionTimeframeSuperTrend()) return ST_SIGNAL_NONE;
+   }
+   
+   double st_direction[5];  // Get more values for better analysis
+   
+   // Copy TrendDirection buffer data (buffer 2)
+   if (CopyBuffer(ExecutionTimeframe_Handle, 2, 0, 5, st_direction) < 5)
+   {
+      return ST_SIGNAL_NONE;
+   }
+   
+   // Check if we have valid data (not EMPTY_VALUE)
+   bool hasValidData = false;
+   for(int i = 1; i < 5; i++)  // Start from index 1, skip current candle [0]
+   {
+      if(st_direction[i] != EMPTY_VALUE)
+      {
+         hasValidData = true;
+         break;
+      }
+   }
+   
+   if(!hasValidData)
+   {
+      Print("Execution timeframe SuperTrend indicator data not ready yet");
+      return ST_SIGNAL_NONE;
+   }
+   
+   ENUM_ST_SIGNAL signal = ST_SIGNAL_NONE;
+   
+   // Check for SELL signal (trend changes from 1 to 0)
+   if (st_direction[1] == 0 && st_direction[2] == 1)
+   {
+      signal = ST_SIGNAL_SELL;
+   }
+   // Check for BUY signal (trend changes from 0 to 1)
+   else if (st_direction[1] == 1 && st_direction[2] == 0)
+   {
+      signal = ST_SIGNAL_BUY;
+   }
+   
+   return signal;
 }
 
 //+------------------------------------------------------------------+
@@ -212,13 +283,16 @@ ENUM_ST_SIGNAL GetSuperTrendSignalForTimeframe(string symbol, int timeframe)
 //--- Global variables
 double current_spread = 0.0;
 static datetime last_candle_time = 0;
+static datetime last_execution_candle_time = 0;  // Track execution timeframe candle time
 static ENUM_ST_SIGNAL last_signal = ST_SIGNAL_NONE;
 static double last_stLinePrice = 0;
+int ExecutionTimeframe_Handle = INVALID_HANDLE;  // Handle for execution timeframe SuperTrend
 input bool takePositionsAtStart = true;
 input double takeProfitForPosition = 220.0;  // Take profit in account currency
 input double stopLossForPosition = 50.0;    // Stop loss in account currency
 input bool trackMajorTrend = true;
 input ENUM_TIMEFRAMES tradeWithMajorTrend = PERIOD_M15;
+input ENUM_TIMEFRAMES tradeExecutionTimeframe = PERIOD_M5;  // Timeframe for trade execution signals
 input double lotSize = 0.01;
 input bool checkOverAllPositionsForProfit = true;
 
@@ -235,6 +309,13 @@ int OnInit()
       Print("Failed to initialize SuperTrend indicator");
       return(INIT_FAILED);
    }
+   
+   // Initialize execution timeframe SuperTrend indicator
+   if (!InitExecutionTimeframeSuperTrend())
+   {
+      Print("Failed to initialize execution timeframe SuperTrend indicator");
+      return(INIT_FAILED);
+   }
    Sleep(1000);
    getMajorTrend();
    Comment("Expert Advisor initialized. Initial spread: ", current_spread);
@@ -247,6 +328,14 @@ void OnDeinit(const int reason)
 {
    // Clean up SuperTrend indicator handle
    DeinitSuperTrend();
+   
+   // Clean up execution timeframe SuperTrend indicator handle
+   if (ExecutionTimeframe_Handle != INVALID_HANDLE)
+   {
+      IndicatorRelease(ExecutionTimeframe_Handle);
+      ExecutionTimeframe_Handle = INVALID_HANDLE;
+      Print("Execution timeframe SuperTrend indicator handle released");
+   }
 }
 //+------------------------------------------------------------------+
 //| Expert tick function                                             |
@@ -254,52 +343,63 @@ void OnDeinit(const int reason)
 void OnTick()
 {
    checkProfit();
-   datetime current_candle_time = iTime(_Symbol, 0, 0);
+   
+   // Check execution timeframe for trade signals
+   datetime execution_candle_time = iTime(_Symbol, tradeExecutionTimeframe, 0);
    double stLinePrice = 0;
-   if (current_candle_time != last_candle_time)
+   
+   if (execution_candle_time != last_execution_candle_time)
    {
-      ENUM_ST_SIGNAL current_signal = GetSuperTrendSignal();
+      ENUM_ST_SIGNAL execution_signal = GetExecutionTimeframeSignal();
       double st_line[1];      
       double spread = GetSpread() * 2.5;
       int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
       datetime expiration = 0; // Good till cancel
       double stopLoss = 0;
       double takeProfit = 0;
-      if (CopyBuffer(SuperTrend_Handle, 0, 1, 1, st_line) == 1)
+      
+      // Get SuperTrend line price from execution timeframe
+      if (CopyBuffer(ExecutionTimeframe_Handle, 0, 1, 1, st_line) == 1)
       {
          stLinePrice = st_line[0];
       }
-      int majorTrend = trackMajorTrend ? getMajorTrend() : current_signal;
-      if (current_signal != ST_SIGNAL_NONE && current_signal != last_signal)
+      
+      int majorTrend = trackMajorTrend ? getMajorTrend() : execution_signal;
+      
+      if (execution_signal != ST_SIGNAL_NONE && execution_signal != last_signal)
       {
+         Print("Trade signal detected on ", EnumToString(tradeExecutionTimeframe), " timeframe: ", 
+               (execution_signal == ST_SIGNAL_BUY ? "BUY" : "SELL"));
+         
          // Close all positions on any signal change
          // CloseAllPositions();
-         if(current_signal == ST_SIGNAL_BUY && (!trackMajorTrend || majorTrend == 1))
+         if(execution_signal == ST_SIGNAL_BUY && (!trackMajorTrend || majorTrend == 1))
          {
             if(takePositionsAtStart){
-               m_trade.Buy(lotSize, _Symbol, stLinePrice, stopLoss, takeProfit, "SuperTrend Buy");
+               m_trade.Buy(lotSize, _Symbol, 0, stopLoss, takeProfit, "SuperTrend Buy - " + EnumToString(tradeExecutionTimeframe));
             }
             // else{
                double price = stLinePrice + spread;
                price = NormalizeDouble(price, digits);
-               PlaceBuyStop(lotSize, price, "SuperTrend Buy Stop");
+               PlaceBuyStop(lotSize, price, "SuperTrend Buy Stop - " + EnumToString(tradeExecutionTimeframe));
             // }
          }
-         else if(current_signal == ST_SIGNAL_SELL && (!trackMajorTrend || majorTrend == -1))
+         else if(execution_signal == ST_SIGNAL_SELL && (!trackMajorTrend || majorTrend == -1))
          {
             if(takePositionsAtStart){
-               m_trade.Sell(lotSize, _Symbol, stLinePrice, stopLoss, takeProfit, "SuperTrend Sell");
+               m_trade.Sell(lotSize, _Symbol, 0, stopLoss, takeProfit, "SuperTrend Sell - " + EnumToString(tradeExecutionTimeframe));
             }
             // else{
                double price = stLinePrice - spread;
                price = NormalizeDouble(price, digits);
-               PlaceSellStop(lotSize, price, "SuperTrend Sell Stop");
+               PlaceSellStop(lotSize, price, "SuperTrend Sell Stop - " + EnumToString(tradeExecutionTimeframe));
             // }
          }
-         last_signal = current_signal;
+         last_signal = execution_signal;
       }
       else
       {
+         // Update pending orders based on execution timeframe SuperTrend line
          double buyPrice = NormalizeDouble(stLinePrice + spread, digits);
          double sellPrice = NormalizeDouble(stLinePrice - spread, digits);
          if (stLinePrice != last_stLinePrice)
@@ -308,7 +408,7 @@ void OnTick()
          }
       }
       last_stLinePrice = stLinePrice;
-      last_candle_time = current_candle_time;
+      last_execution_candle_time = execution_candle_time;
    }
 }
 
