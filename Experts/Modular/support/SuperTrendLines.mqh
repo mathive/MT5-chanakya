@@ -82,7 +82,7 @@ void CreateOrUpdateSuperTrendLine(string lineName, double price, color lineColor
       datetime currentTime = TimeCurrent();
       if(ObjectCreate(0, textName, OBJ_TEXT, 0, currentTime, price))
       {
-         ObjectSetString(0, textName, OBJPROP_TEXT, timeframeName + " ST: " + DoubleToString(price, _Digits));
+         ObjectSetString(0, textName, OBJPROP_TEXT, timeframeName + ":" + DoubleToString(price, _Digits));
          ObjectSetInteger(0, textName, OBJPROP_COLOR, lineColor);
          ObjectSetInteger(0, textName, OBJPROP_FONTSIZE, TextFontSize);
          ObjectSetString(0, textName, OBJPROP_FONT, TextFont);
