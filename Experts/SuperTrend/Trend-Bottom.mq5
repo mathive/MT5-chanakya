@@ -74,6 +74,25 @@ bool InitExecutionTimeframeSuperTrend()
 }
 
 //+------------------------------------------------------------------+
+//| Initialize SuperTrend indicator handle for major trend timeframe|
+//+------------------------------------------------------------------+
+bool InitMajorTrendSuperTrend()
+{
+   MajorTrend_Handle = iCustom(_Symbol, tradeWithMajorTrend, "Supertrend", 
+                               IndicatorName, ATRMultiplier, ATRPeriod, ATRMaxBars, IndicatorShift, 
+                               EnableNotify, SendAlert, SendApp, SendEmail, TriggerCandle);
+   
+   if (MajorTrend_Handle == INVALID_HANDLE)
+   {
+      Print("Failed to create major trend SuperTrend indicator handle. Error: ", GetLastError());
+      return false;
+   }
+   
+   Print("Major trend SuperTrend indicator initialized successfully for ", EnumToString(tradeWithMajorTrend));
+   return true;
+}
+
+//+------------------------------------------------------------------+
 //| Function to get SuperTrend signal                               |
 //+------------------------------------------------------------------+
 ENUM_ST_SIGNAL GetSuperTrendSignal()
@@ -203,6 +222,47 @@ ENUM_ST_SIGNAL GetExecutionTimeframeSignal()
 }
 
 //+------------------------------------------------------------------+
+//| Function to get SuperTrend signal from major trend timeframe   |
+//+------------------------------------------------------------------+
+ENUM_ST_SIGNAL GetMajorTrendSignal()
+{
+   if (MajorTrend_Handle == INVALID_HANDLE)
+   {
+      Print("Major trend SuperTrend handle is invalid, attempting to initialize...");
+      if (!InitMajorTrendSuperTrend()) return ST_SIGNAL_NONE;
+   }
+   
+   double st_direction[3];
+   
+   // Copy TrendDirection buffer data (buffer 2)
+   if (CopyBuffer(MajorTrend_Handle, 2, 0, 3, st_direction) < 3)
+   {
+      return ST_SIGNAL_NONE;
+   }
+   
+   // Check if we have valid data (not EMPTY_VALUE)
+   if(st_direction[1] == EMPTY_VALUE || st_direction[2] == EMPTY_VALUE)
+   {
+      return ST_SIGNAL_NONE;
+   }
+   
+   ENUM_ST_SIGNAL signal = ST_SIGNAL_NONE;
+   
+   // Check for SELL signal (trend changes from 1 to 0)
+   if (st_direction[1] == 0 && st_direction[2] == 1)
+   {
+      signal = ST_SIGNAL_SELL;
+   }
+   // Check for BUY signal (trend changes from 0 to 1)
+   else if (st_direction[1] == 1 && st_direction[2] == 0)
+   {
+      signal = ST_SIGNAL_BUY;
+   }
+   
+   return signal;
+}
+
+//+------------------------------------------------------------------+
 //| Function to get current SuperTrend trend direction              |
 //+------------------------------------------------------------------+
 string GetSuperTrendDirection()
@@ -285,8 +345,10 @@ double current_spread = 0.0;
 static datetime last_candle_time = 0;
 static datetime last_execution_candle_time = 0;  // Track execution timeframe candle time
 static ENUM_ST_SIGNAL last_signal = ST_SIGNAL_NONE;
+static ENUM_ST_SIGNAL last_major_signal = ST_SIGNAL_NONE;  // Track major trend signal
 static double last_stLinePrice = 0;
 int ExecutionTimeframe_Handle = INVALID_HANDLE;  // Handle for execution timeframe SuperTrend
+int MajorTrend_Handle = INVALID_HANDLE;          // Handle for major trend timeframe SuperTrend
 input bool takePositionsAtStart = true;
 input double takeProfitForPosition = 220.0;  // Take profit in account currency
 input double stopLossForPosition = 50.0;    // Stop loss in account currency
@@ -316,8 +378,26 @@ int OnInit()
       Print("Failed to initialize execution timeframe SuperTrend indicator");
       return(INIT_FAILED);
    }
+   
+   // Initialize major trend SuperTrend indicator
+   if (trackMajorTrend && !InitMajorTrendSuperTrend())
+   {
+      Print("Failed to initialize major trend SuperTrend indicator");
+      return(INIT_FAILED);
+   }
    Sleep(1000);
    getMajorTrend();
+   
+   // Initialize the major signal to prevent false signals on startup
+   if(trackMajorTrend)
+   {
+      last_major_signal = GetMajorTrendSignal();
+      Print("Initial major trend signal: ", 
+            (last_major_signal == ST_SIGNAL_BUY ? "BUY" : 
+             last_major_signal == ST_SIGNAL_SELL ? "SELL" : "NONE"),
+            " on ", EnumToString(tradeWithMajorTrend), " timeframe");
+   }
+   
    Comment("Expert Advisor initialized. Initial spread: ", current_spread);
    return(INIT_SUCCEEDED);
 }
@@ -336,6 +416,14 @@ void OnDeinit(const int reason)
       ExecutionTimeframe_Handle = INVALID_HANDLE;
       Print("Execution timeframe SuperTrend indicator handle released");
    }
+   
+   // Clean up major trend SuperTrend indicator handle
+   if (MajorTrend_Handle != INVALID_HANDLE)
+   {
+      IndicatorRelease(MajorTrend_Handle);
+      MajorTrend_Handle = INVALID_HANDLE;
+      Print("Major trend SuperTrend indicator handle released");
+   }
 }
 //+------------------------------------------------------------------+
 //| Expert tick function                                             |
@@ -343,6 +431,33 @@ void OnDeinit(const int reason)
 void OnTick()
 {
    checkProfit();
+   
+   // Check for major trend signal changes
+   if(trackMajorTrend)
+   {
+      ENUM_ST_SIGNAL current_major_signal = GetMajorTrendSignal();
+      
+      // If major signal changed, close all positions and cancel pending orders
+      if(current_major_signal != ST_SIGNAL_NONE && current_major_signal != last_major_signal && last_major_signal != ST_SIGNAL_NONE)
+      {
+         Print("Major trend signal changed from ", 
+               (last_major_signal == ST_SIGNAL_BUY ? "BUY" : "SELL"), 
+               " to ", 
+               (current_major_signal == ST_SIGNAL_BUY ? "BUY" : "SELL"),
+               " on ", EnumToString(tradeWithMajorTrend), " timeframe");
+         Print("Closing all positions and canceling pending orders due to major signal change");
+         
+         CloseAllPositions();
+         CancelAllPendingOrders();
+         
+         // Reset the execution signal to prevent immediate new trades
+         last_signal = ST_SIGNAL_NONE;
+      }
+      
+      // Update the last major signal
+      if(current_major_signal != ST_SIGNAL_NONE)
+         last_major_signal = current_major_signal;
+   }
    
    // Check execution timeframe for trade signals
    datetime execution_candle_time = iTime(_Symbol, tradeExecutionTimeframe, 0);
