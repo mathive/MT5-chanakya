@@ -1,7 +1,7 @@
 //+------------------------------------------------------------------+
 //|                                                      Uniform.mqh |
-//|                             Copyright 2000-2025, MetaQuotes Ltd. |
-//|                                             https://www.mql5.com |
+//|                             Copyright 2000-2026, MetaQuotes Ltd. |
+//|                                                     www.mql5.com |
 //+------------------------------------------------------------------+
 #include "Math.mqh"
 
@@ -281,7 +281,10 @@ double MathQuantileUniform(const double probability,const double a,const double 
    if(log_mode==true)
      {
       if(probability==QNEGINF)
-         return 0.0;
+        {
+         error_code=ERR_OK;
+         return tail ? a : b;
+        }
      }
 //--- check parameters
    if(!MathIsValidNumber(a) || !MathIsValidNumber(b))
@@ -375,7 +378,7 @@ bool MathQuantileUniform(const double &probability[],const double a,const double
    for(int i=0; i<data_count; i++)
      {
       if(log_mode==true && probability[i]==QNEGINF)
-         result[i]=0;
+         result[i]=tail ? a : b;
       else
         {
          //--- calculate real probability

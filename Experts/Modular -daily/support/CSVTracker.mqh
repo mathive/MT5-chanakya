@@ -1,3 +1,24 @@
+bool IsTimeframeInComment(string comment, string tfName)
+{
+   if(comment == "" || tfName == "")
+      return false;
+
+   int len_tf = StringLen(tfName);
+   int pos = 0;
+   while((pos = StringFind(comment, tfName, pos)) >= 0)
+   {
+      bool before_ok = (pos == 0) || (StringGetCharacter(comment, pos - 1) == ' ') || (StringGetCharacter(comment, pos - 1) == '_') || (StringGetCharacter(comment, pos - 1) == '-') || (StringGetCharacter(comment, pos - 1) == '[');
+      int end_pos = pos + len_tf;
+      bool after_ok = (end_pos >= StringLen(comment)) || (StringGetCharacter(comment, end_pos) == ' ') || (StringGetCharacter(comment, end_pos) == '_') || (StringGetCharacter(comment, end_pos) == '-') || (StringGetCharacter(comment, end_pos) == ']');
+
+      if(before_ok && after_ok)
+         return true;
+
+      pos += len_tf;
+   }
+   return false;
+}
+
 //+------------------------------------------------------------------+
 //|                                                   CSVTracker.mqh |
 //|         Simple CSV tracking system for EA state persistence     |
@@ -226,7 +247,7 @@ bool HasPositionForTimeframe_CSV(ENUM_TIMEFRAMES timeframe)
                 PositionGetInteger(POSITION_MAGIC) == csvInstance.magicNumber)
             {
                 string comment = PositionGetString(POSITION_COMMENT);
-                if (StringFind(comment, tfName) >= 0)
+                if (IsTimeframeInComment(comment, tfName))
                 {
                     return true;
                 }

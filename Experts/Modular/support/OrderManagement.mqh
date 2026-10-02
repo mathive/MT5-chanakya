@@ -17,29 +17,75 @@ void InitOrderManagement(int magic)
 
 //+------------------------------------------------------------------+
 
-// Place a pending BUY STOP order using CTrade object
+// Place a pending BUY order (auto chooses BuyLimit or BuyStop based on price vs Ask)
 bool PlaceBuyStop(double lot_Size, double price, string comment = "", double stopLoss = 0, double takeProfit = 0)
 {
-   // stopLoss/takeProfit = 0 means no SL/TP
    datetime expiration = 0;
-   bool result = m_trade.BuyLimit(lot_Size, price, _Symbol, stopLoss, takeProfit, ORDER_TIME_GTC, expiration, comment);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   int stops_level = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double min_dist = stops_level * point;
+
+   price = NormalizeDouble(price, digits);
+   if(stopLoss > 0.0) stopLoss = NormalizeDouble(stopLoss, digits);
+   if(takeProfit > 0.0) takeProfit = NormalizeDouble(takeProfit, digits);
+
+   bool result = false;
+   if(price < ask - min_dist)
+   {
+      result = m_trade.BuyLimit(lot_Size, price, _Symbol, stopLoss, takeProfit, ORDER_TIME_GTC, expiration, comment);
+   }
+   else if(price > ask + min_dist)
+   {
+      result = m_trade.BuyStop(lot_Size, price, _Symbol, stopLoss, takeProfit, ORDER_TIME_GTC, expiration, comment);
+   }
+   else
+   {
+      double adj_price = NormalizeDouble(ask - (min_dist > 0 ? min_dist : point), digits);
+      result = m_trade.BuyLimit(lot_Size, adj_price, _Symbol, stopLoss, takeProfit, ORDER_TIME_GTC, expiration, comment);
+   }
+
    if(!result)
    {
-      Print("BUY STOP order failed: ", m_trade.ResultRetcode());
+      Print("BUY Pending order failed: ", m_trade.ResultRetcode(), " [", m_trade.ResultRetcodeDescription(), "] Price=", price, " Ask=", ask);
       return false;
    }
    return true;
 }
 
-// Place a pending SELL STOP order using CTrade object
+// Place a pending SELL order (auto chooses SellLimit or SellStop based on price vs Bid)
 bool PlaceSellStop(double lot_Size, double price, string comment = "", double stopLoss = 0, double takeProfit = 0)
 {
-   // stopLoss/takeProfit = 0 means no SL/TP
    datetime expiration = 0;
-   bool result = m_trade.SellLimit(lot_Size, price, _Symbol, stopLoss, takeProfit, ORDER_TIME_GTC, expiration, comment);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   int stops_level = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double min_dist = stops_level * point;
+
+   price = NormalizeDouble(price, digits);
+   if(stopLoss > 0.0) stopLoss = NormalizeDouble(stopLoss, digits);
+   if(takeProfit > 0.0) takeProfit = NormalizeDouble(takeProfit, digits);
+
+   bool result = false;
+   if(price > bid + min_dist)
+   {
+      result = m_trade.SellLimit(lot_Size, price, _Symbol, stopLoss, takeProfit, ORDER_TIME_GTC, expiration, comment);
+   }
+   else if(price < bid - min_dist)
+   {
+      result = m_trade.SellStop(lot_Size, price, _Symbol, stopLoss, takeProfit, ORDER_TIME_GTC, expiration, comment);
+   }
+   else
+   {
+      double adj_price = NormalizeDouble(bid + (min_dist > 0 ? min_dist : point), digits);
+      result = m_trade.SellLimit(lot_Size, adj_price, _Symbol, stopLoss, takeProfit, ORDER_TIME_GTC, expiration, comment);
+   }
+
    if(!result)
    {
-      Print("SELL STOP order failed: ", m_trade.ResultRetcode());
+      Print("SELL Pending order failed: ", m_trade.ResultRetcode(), " [", m_trade.ResultRetcodeDescription(), "] Price=", price, " Bid=", bid);
       return false;
    }
    return true;

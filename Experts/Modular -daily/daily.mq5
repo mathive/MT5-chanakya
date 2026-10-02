@@ -214,6 +214,27 @@ bool PositionExists(ENUM_TIMEFRAMES timeframe)
 //+------------------------------------------------------------------+
 //| Check if position exists for timeframe                          |
 //+------------------------------------------------------------------+
+bool IsTimeframeInComment(string comment, string tfName)
+{
+   if(comment == "" || tfName == "")
+      return false;
+
+   int len_tf = StringLen(tfName);
+   int pos = 0;
+   while((pos = StringFind(comment, tfName, pos)) >= 0)
+   {
+      bool before_ok = (pos == 0) || (StringGetCharacter(comment, pos - 1) == ' ') || (StringGetCharacter(comment, pos - 1) == '_') || (StringGetCharacter(comment, pos - 1) == '-') || (StringGetCharacter(comment, pos - 1) == '[');
+      int end_pos = pos + len_tf;
+      bool after_ok = (end_pos >= StringLen(comment)) || (StringGetCharacter(comment, end_pos) == ' ') || (StringGetCharacter(comment, end_pos) == '_') || (StringGetCharacter(comment, end_pos) == '-') || (StringGetCharacter(comment, end_pos) == ']');
+
+      if(before_ok && after_ok)
+         return true;
+
+      pos += len_tf;
+   }
+   return false;
+}
+
 bool HasOpenPositionForTimeframe(ENUM_TIMEFRAMES timeframe)
 {
    string tfName = GetTimeframeName(timeframe);
@@ -226,11 +247,18 @@ bool HasOpenPositionForTimeframe(ENUM_TIMEFRAMES timeframe)
       {
          string positionComment = PositionGetString(POSITION_COMMENT);
          string positionSymbol = PositionGetString(POSITION_SYMBOL);
+         long magic = PositionGetInteger(POSITION_MAGIC);
 
-         // Check if position is for current symbol and contains timeframe name
-         if (positionSymbol == _Symbol && StringFind(positionComment, tfName) >= 0)
+         // Must belong to this EA instance (matching magicNumber)
+         if (positionSymbol == _Symbol)
          {
-            return true;
+            bool isOurPosition = (magic == magicNumber) || 
+                                 (magic == 0 && StringFind(positionComment, "SuperTrend") >= 0);
+
+            if (isOurPosition && IsTimeframeInComment(positionComment, tfName))
+            {
+               return true;
+            }
          }
       }
    }
@@ -350,7 +378,7 @@ void PlaceOrUpdateOrder(ENUM_TIMEFRAMES timeframe, ENUM_ST_SIGNAL signal, double
             string positionSymbol = PositionGetString(POSITION_SYMBOL);
             string tfNameCheck = GetTimeframeName(timeframe);
 
-            if (positionSymbol == _Symbol && StringFind(positionComment, tfNameCheck) >= 0)
+            if (positionSymbol == _Symbol && IsTimeframeInComment(positionComment, tfNameCheck))
             {
                ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
                string posTypeStr = (posType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
@@ -583,7 +611,7 @@ void ScanExistingOrders()
                string tfName = GetTimeframeName(selectedTFs[tfIdx]);
                string expectedComment = "SuperTrend " + tfName;
                
-               if (StringFind(orderComment, expectedComment) >= 0)
+               if (IsTimeframeInComment(orderComment, tfName))
                {
                   isSelectedTimeframe = true;
                   break;
@@ -626,7 +654,7 @@ void ScanExistingOrders()
                string tfName = GetTimeframeName(selectedTFs[tfIdx]);
                string expectedComment = "SuperTrend " + tfName;
                
-               if (StringFind(orderComment, expectedComment) >= 0)
+               if (IsTimeframeInComment(orderComment, tfName))
                {
                   // Found order for this timeframe - update tracking
                   int trackingIdx = FindTimeframeIndex(selectedTFs[tfIdx]);
@@ -1733,7 +1761,7 @@ bool HasPositionForTimeframe_CSV(ENUM_TIMEFRAMES timeframe)
                 PositionGetInteger(POSITION_MAGIC) == csvInstance.magicNumber)
             {
                 string comment = PositionGetString(POSITION_COMMENT);
-                if (StringFind(comment, tfName) >= 0)
+                if (IsTimeframeInComment(comment, tfName))
                 {
                     return true;
                 }

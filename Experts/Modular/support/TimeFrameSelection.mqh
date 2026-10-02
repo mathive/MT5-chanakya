@@ -8,7 +8,7 @@
 
 //--- Input parameters for timeframe selection
 input group "=== TIMEFRAME SELECTION ==="
-input bool UseTF_M1 = false;        // Use M1 timeframe
+input bool UseTF_M1 = true;         // Use M1 timeframe
 input bool UseTF_M2 = false;        // Use M2 timeframe
 input bool UseTF_M3 = false;        // Use M3 timeframe
 input bool UseTF_M5 = true;         // Use M5 timeframe

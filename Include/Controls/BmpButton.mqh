@@ -1,7 +1,7 @@
 //+------------------------------------------------------------------+
 //|                                                    BmpButton.mqh |
-//|                             Copyright 2000-2025, MetaQuotes Ltd. |
-//|                                             https://www.mql5.com |
+//|                             Copyright 2000-2026, MetaQuotes Ltd. |
+//|                                                     www.mql5.com |
 //+------------------------------------------------------------------+
 #include "WndObj.mqh"
 #include <ChartObjects\ChartObjectsBmpControls.mqh>
@@ -54,7 +54,7 @@ protected:
    virtual bool      OnHide(void);
    virtual bool      OnMove(void);
    virtual bool      OnChange(void);
-   //--- новые обработчики
+   //--- new event handlers
    virtual bool      OnActivate(void);
    virtual bool      OnDeactivate(void);
    virtual bool      OnMouseDown(void);

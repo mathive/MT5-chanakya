@@ -209,11 +209,18 @@ bool HasOpenPositionForTimeframe(ENUM_TIMEFRAMES timeframe)
       {
          string positionComment = PositionGetString(POSITION_COMMENT);
          string positionSymbol = PositionGetString(POSITION_SYMBOL);
+         long magic = PositionGetInteger(POSITION_MAGIC);
 
-         // Check if position is for current symbol and contains timeframe name
-         if (positionSymbol == _Symbol && StringFind(positionComment, tfName) >= 0)
+         // Must belong to this EA instance (matching magicNumber) to avoid conflicts with other EAs like GoldGrid
+         if (positionSymbol == _Symbol)
          {
-            return true;
+            bool isOurPosition = (magic == magicNumber) || 
+                                 (magic == 0 && StringFind(positionComment, "SuperTrend") >= 0);
+
+            if (isOurPosition && IsTimeframeInComment(positionComment, tfName))
+            {
+               return true;
+            }
          }
       }
    }
@@ -331,9 +338,13 @@ void PlaceOrUpdateOrder(ENUM_TIMEFRAMES timeframe, ENUM_ST_SIGNAL signal, double
          {
             string positionComment = PositionGetString(POSITION_COMMENT);
             string positionSymbol = PositionGetString(POSITION_SYMBOL);
+            long magic = PositionGetInteger(POSITION_MAGIC);
             string tfNameCheck = GetTimeframeName(timeframe);
 
-            if (positionSymbol == _Symbol && StringFind(positionComment, tfNameCheck) >= 0)
+            bool isOurPosition = (magic == magicNumber) || 
+                                 (magic == 0 && StringFind(positionComment, "SuperTrend") >= 0);
+
+            if (positionSymbol == _Symbol && isOurPosition && IsTimeframeInComment(positionComment, tfNameCheck))
             {
                ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
                string posTypeStr = (posType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
@@ -350,6 +361,16 @@ void PlaceOrUpdateOrder(ENUM_TIMEFRAMES timeframe, ENUM_ST_SIGNAL signal, double
    string comment = "SuperTrend " + GetTimeframeName(timeframe);
    ulong existingTicket = lastOrderTickets[tfIndex];
    double lastPrice = lastOrderPrices[tfIndex];
+
+   // SAFETY: Check if order exists in account but we lost track of it
+   if (existingTicket == 0 || !OrderExists(existingTicket))
+   {
+      existingTicket = FindOrderTicketForTimeframe(timeframe);
+      if (existingTicket > 0)
+      {
+         lastOrderTickets[tfIndex] = existingTicket;
+      }
+   }
 
    // Check if price changed significantly (more than 1 point)
    bool priceChanged = MathAbs(newPrice - lastPrice) > _Point;
@@ -391,7 +412,7 @@ void PlaceOrUpdateOrder(ENUM_TIMEFRAMES timeframe, ENUM_ST_SIGNAL signal, double
          if (success)
          {
             // Get the ticket of the last placed order
-            newTicket = GetLastOrderTicket();
+            newTicket = FindOrderTicketForTimeframe(timeframe);
          }
       }
       else if (signal == ST_SIGNAL_SELL)
@@ -400,7 +421,7 @@ void PlaceOrUpdateOrder(ENUM_TIMEFRAMES timeframe, ENUM_ST_SIGNAL signal, double
          if (success)
          {
             // Get the ticket of the last placed order
-            newTicket = GetLastOrderTicket();
+            newTicket = FindOrderTicketForTimeframe(timeframe);
          }
       }
 
@@ -415,14 +436,22 @@ void PlaceOrUpdateOrder(ENUM_TIMEFRAMES timeframe, ENUM_ST_SIGNAL signal, double
 }
 
 //+------------------------------------------------------------------+
-//| Get the ticket of the last placed order                         |
+//| Find order ticket for specific timeframe                        |
 //+------------------------------------------------------------------+
-ulong GetLastOrderTicket()
+ulong FindOrderTicketForTimeframe(ENUM_TIMEFRAMES timeframe)
 {
-   int total = OrdersTotal();
-   if (total > 0)
+   string tfName = GetTimeframeName(timeframe);
+   string searchComment = "SuperTrend " + tfName;
+   
+   for (int i = OrdersTotal() - 1; i >= 0; i--)
    {
-      return OrderGetTicket(total - 1);
+      ulong ticket = OrderGetTicket(i);
+      if (ticket > 0 && OrderGetInteger(ORDER_MAGIC) == magicNumber && OrderGetString(ORDER_SYMBOL) == _Symbol)
+      {
+         string comment = OrderGetString(ORDER_COMMENT);
+         if (IsTimeframeInComment(comment, tfName))
+            return ticket;
+      }
    }
    return 0;
 }
@@ -566,7 +595,7 @@ void ScanExistingOrders()
                string tfName = GetTimeframeName(selectedTFs[tfIdx]);
                string expectedComment = "SuperTrend " + tfName;
                
-               if (StringFind(orderComment, expectedComment) >= 0)
+               if (IsTimeframeInComment(orderComment, tfName))
                {
                   isSelectedTimeframe = true;
                   break;
@@ -609,7 +638,7 @@ void ScanExistingOrders()
                string tfName = GetTimeframeName(selectedTFs[tfIdx]);
                string expectedComment = "SuperTrend " + tfName;
                
-               if (StringFind(orderComment, expectedComment) >= 0)
+               if (IsTimeframeInComment(orderComment, tfName))
                {
                   // Found order for this timeframe - update tracking
                   int trackingIdx = FindTimeframeIndex(selectedTFs[tfIdx]);
@@ -881,6 +910,15 @@ int OnInit()
       max_profit_hit_time = 0;
    }
 
+   // Place initial orders for aligned timeframes on startup
+   ENUM_ST_SIGNAL majorInitSignal = GetSuperTrendSignalForTimeframe(_Symbol, GetMajorTimeframe());
+   if(majorInitSignal != ST_SIGNAL_NONE)
+   {
+      lastMajorTFSignal = majorInitSignal;
+      Print("Initial startup MTF scan - Major TF (", GetTimeframeName(GetMajorTimeframe()), ") Signal: ", EnumToString(majorInitSignal));
+      PlaceOrdersAlignedWithMajorTF(majorInitSignal);
+   }
+
    // Log EA initialization
    string initDetails = "EA initialized with " + IntegerToString(GetSelectedTimeframesCount()) + " timeframes. MTF: " + GetTimeframeName(GetMajorTimeframe()) + ". Spread: " + DoubleToString(current_spread, 1);
    Print("EA Initialization: ", initDetails);
@@ -949,7 +987,12 @@ void OnTick()
    CheckMaxProfitProtection();
 
    // Update SuperTrend lines with optimization (once per minute) - ALWAYS UPDATE VISUALS
-   UpdateSuperTrendLinesOptimized();
+   static uint lastVisualUpdate = 0;
+   if (GetTickCount() - lastVisualUpdate > 1000) // Throttle to 1 second
+   {
+      UpdateSuperTrendLinesOptimized();
+      lastVisualUpdate = GetTickCount();
+   }
 
    // Check if trading can resume after protection was triggered
    if (!CanResumeAfterMaxProtection())
@@ -1004,6 +1047,13 @@ void OnTick()
 
             // Log signal detection
             ENUM_ST_SIGNAL majorTFSignal = GetSuperTrendSignalForTimeframe(_Symbol, GetMajorTimeframe());
+            
+            // SAFETY: If major signal is not available, skip logic to avoid unwanted cancellations
+            if (majorTFSignal == ST_SIGNAL_NONE)
+            {
+               continue;
+            }
+            
             bool isAligned = (majorTFSignal == signal);
             LogSignalDetected(selectedTFs[i], signal, stLinePrice, isAligned);
 
@@ -1023,10 +1073,20 @@ void OnTick()
             }
             else
             {
-               string majorTFStr = (majorTFSignal == ST_SIGNAL_BUY) ? "BUY" : (majorTFSignal == ST_SIGNAL_SELL) ? "SELL"
-                                                                                                                : "NONE";
-               // Cancel existing order for this timeframe if signals don't align
-               CancelOrderForTimeframe(selectedTFs[i]);
+               // Only cancel if we actually have an order to cancel
+               int tfIndex = FindTimeframeIndex(selectedTFs[i]);
+               if (tfIndex != -1 && lastOrderTickets[tfIndex] > 0)
+               {
+                  string majorTFStr = (majorTFSignal == ST_SIGNAL_BUY) ? "BUY" : (majorTFSignal == ST_SIGNAL_SELL) ? "SELL" : "NONE";
+                  string currentTFStr = (signal == ST_SIGNAL_BUY) ? "BUY" : (signal == ST_SIGNAL_SELL) ? "SELL" : "NONE";
+                  
+                  Print("Signal Mismatch for ", GetTimeframeName(selectedTFs[i]), 
+                        ": Current=", currentTFStr, " vs Major=", majorTFStr, 
+                        ". Cancelling order #", lastOrderTickets[tfIndex]);
+                  
+                  // Cancel existing order for this timeframe if signals don't align
+                  CancelOrderForTimeframe(selectedTFs[i]);
+               }
             }
          }
       }

@@ -1,7 +1,7 @@
 //+------------------------------------------------------------------+
 //|                                                     FilePipe.mqh |
-//|                             Copyright 2000-2025, MetaQuotes Ltd. |
-//|                                             https://www.mql5.com |
+//|                             Copyright 2000-2026, MetaQuotes Ltd. |
+//|                                                     www.mql5.com |
 //+------------------------------------------------------------------+
 #include "File.mqh"
 //+------------------------------------------------------------------+
@@ -204,7 +204,7 @@ bool CFilePipe::ReadInteger(T &value)
    if(WaitForRead(sizeof(T)))
      {
       ResetLastError();
-      value=FileReadInteger(m_handle,sizeof(T));
+      value=(T)FileReadInteger(m_handle,sizeof(T));
       return(GetLastError()==0);
      }
 //--- failure

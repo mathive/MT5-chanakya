@@ -1,7 +1,7 @@
 //+------------------------------------------------------------------+
 //|                                                       Button.mqh |
-//|                             Copyright 2000-2025, MetaQuotes Ltd. |
-//|                                             https://www.mql5.com |
+//|                             Copyright 2000-2026, MetaQuotes Ltd. |
+//|                                                     www.mql5.com |
 //+------------------------------------------------------------------+
 #include "WndObj.mqh"
 #include <ChartObjects\ChartObjectsTxtControls.mqh>
@@ -41,7 +41,7 @@ protected:
    virtual bool      OnHide(void);
    virtual bool      OnMove(void);
    virtual bool      OnResize(void);
-   //--- новые обработчики
+   //--- new handlers
    virtual bool      OnMouseDown(void);
    virtual bool      OnMouseUp(void);
   };
