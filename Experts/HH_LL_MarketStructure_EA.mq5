@@ -104,9 +104,12 @@ STfBot g_bots[TOTAL_TF];
 input group "=== Core Trading ==="
 input ENUM_TRADE_DIRECTION InpTradeDirection    = TRADE_DIR_BOTH; // Allowed Trade Direction (Both / Buy Only / Sell Only)
 input bool                 InpActiveChartOnly   = false;          // Trade ONLY current chart TF (false = All TFs trade independently)
-input double               InpLotSize           = 0.01;           // Lot Size
+input bool                 InpUseAutoLot        = false;          // Use Auto Lot Sizing (Risk %)
+input double               InpRiskPct           = 1.0;            // Risk % per Trade (if Auto Lot is true)
+input double               InpLotSize           = 0.01;           // Fixed Lot Size (if Auto Lot is false)
 input double               InpRetracePct        = 50.0;           // Retracement % (50 = 50% Fib pullback)
 input double               InpEntryTolerance    = 0.30;           // Entry Zone Tolerance (Points/Dollars on Gold - avoids 1-cent miss)
+input int                  InpMaxSpread         = 50;             // Max Spread (Points) - 0 to disable
 input ulong                InpBaseMagic         = 300000;         // Base Magic Number
 input int                  InpSlippage          = 30;             // Max Slippage (Points)
 
@@ -478,6 +481,39 @@ void DetectSwings(int idx)
 }
 
 //+------------------------------------------------------------------+
+//| Calculate Lot Size based on Risk %                               |
+//+------------------------------------------------------------------+
+double CalculateLotSize(double slDistPrice)
+{
+   if(!InpUseAutoLot) return InpLotSize;
+   if(slDistPrice <= 0) return InpLotSize; // Fallback
+
+   double riskMoney = AccountInfoDouble(ACCOUNT_EQUITY) * (InpRiskPct / 100.0);
+   double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+
+   if(tickSize <= 0 || tickValue <= 0) return InpLotSize;
+
+   // Normalize SL distance to ticks
+   double ticks = slDistPrice / tickSize;
+   double riskPerLot = ticks * tickValue;
+
+   if(riskPerLot <= 0) return InpLotSize;
+
+   double lot = riskMoney / riskPerLot;
+
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+
+   lot = MathFloor(lot / lotStep) * lotStep;
+   if(lot < minLot) lot = minLot;
+   if(lot > maxLot) lot = maxLot;
+
+   return lot;
+}
+
+//+------------------------------------------------------------------+
 //| Check Entries — runs every tick for all enabled TFs              |
 //+------------------------------------------------------------------+
 void CheckEntries(int idx)
@@ -520,6 +556,12 @@ void CheckEntries(int idx)
    double bid = g_sym.Bid();
    if(ask <= 0 || bid <= 0) return;
 
+   if(InpMaxSpread > 0)
+   {
+      double spread = (ask - bid) / _Point;
+      if(spread > InpMaxSpread) return;
+   }
+
    g_trade.SetExpertMagicNumber(g_bots[idx].magic);
 
    // -------------------------------------------------------
@@ -555,8 +597,10 @@ void CheckEntries(int idx)
          
          if(tp <= ask) tp = NormalizeDouble(ask + slDist * 1.5, _Digits);
 
+         double lotSize = CalculateLotSize(slDist);
+
          string comment = "HHLL_" + g_bots[idx].name + "_BUY";
-         if(g_trade.Buy(InpLotSize, _Symbol, ask, sl, tp, comment))
+         if(g_trade.Buy(lotSize, _Symbol, ask, sl, tp, comment))
          {
             g_bots[idx].tradeDir            = "BUY";
             g_bots[idx].openPrice           = ask;
@@ -621,8 +665,10 @@ void CheckEntries(int idx)
          
          if(tp >= bid) tp = NormalizeDouble(bid - slDist * 1.5, _Digits);
 
+         double lotSize = CalculateLotSize(slDist);
+
          string comment = "HHLL_" + g_bots[idx].name + "_SELL";
-         if(g_trade.Sell(InpLotSize, _Symbol, bid, sl, tp, comment))
+         if(g_trade.Sell(lotSize, _Symbol, bid, sl, tp, comment))
          {
             g_bots[idx].tradeDir          = "SELL";
             g_bots[idx].openPrice         = bid;
@@ -1013,11 +1059,12 @@ void RenderDashboard()
    UiLabel(g_pfx+"H1","=== HH/LL MARKET STRUCTURE EA v10.10 ===",x,y,clrGold,9,true);
    y += rh + 1;
    string dirStr = (InpTradeDirection == TRADE_DIR_BUY_ONLY) ? "BUY ONLY" : (InpTradeDirection == TRADE_DIR_SELL_ONLY) ? "SELL ONLY" : "BOTH";
+   string lotStr = InpUseAutoLot ? StringFormat("AutoLot:%.1f%%", InpRiskPct) : StringFormat("Lot:%.2f", InpLotSize);
    UiLabel(g_pfx+"H2",
-           StringFormat("%s | %s | %s | Lot:%.2f",
+           StringFormat("%s | %s | %s | %s",
            _Symbol, dirStr,
            InpActiveChartOnly ? "Single-TF" : "Multi-TF",
-           InpLotSize),
+           lotStr),
            x,y,clrSkyBlue,8,false);
    y += rh;
    UiLabel(g_pfx+"SEP1", RepeatStr("-",54), x, y, clrDarkGray, 8, false);
