@@ -1102,10 +1102,16 @@ void RenderDashboard()
 //+------------------------------------------------------------------+
 double CalcClosedPnL()
 {
-   if(!HistorySelect(0, TimeCurrent())) return 0;
+   static int lastDealsTotal = -1;
+   static double cachedPnL = 0;
+
+   if(!HistorySelect(0, TimeCurrent())) return cachedPnL;
 
    int nd = HistoryDealsTotal();
+   if(nd == lastDealsTotal) return cachedPnL;
+
    ulong posIds[];
+   ArrayResize(posIds, nd);
    int   posCount = 0;
 
    // Pass 1: collect position IDs opened by our magics
@@ -1121,7 +1127,7 @@ double CalcClosedPnL()
       if(!pid) continue;
       bool found = false;
       for(int k = 0; k < posCount; k++) if(posIds[k] == pid) { found = true; break; }
-      if(!found) { ArrayResize(posIds, posCount+1); posIds[posCount++] = pid; }
+      if(!found) { posIds[posCount++] = pid; }
    }
 
    // Pass 2: sum closing deals for those positions
@@ -1143,7 +1149,9 @@ double CalcClosedPnL()
              + HistoryDealGetDouble(dt, DEAL_FEE);
    }
 
-   return ToUsd(total);
+   lastDealsTotal = nd;
+   cachedPnL = ToUsd(total);
+   return cachedPnL;
 }
 
 //+------------------------------------------------------------------+
